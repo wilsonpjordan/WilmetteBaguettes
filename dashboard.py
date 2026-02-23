@@ -629,12 +629,35 @@ def _mc_sim_player(dist, n_sim, stat_cols, lower_clip=None):
 @st.cache_data(show_spinner=False, ttl=3600)
 def mc_run_simulation(hitters, pitchers, n_sim, injury_pct,
                       regression_pull, platoon_boost, run_count):
+    """
+    injury_pct: float 0.0–0.40, passed in already divided by 100.
+      Controls BOTH the probability of an IL stint AND its severity:
+        - P(IL stint this season) = injury_pct  (e.g. 0.15 → 15% of sims)
+        - When injured, player misses 15–50% of games (scaled by severity)
+        - At 0% → no injuries fire at all
+        - At 40% → 40% of sims have an injury, missing 15–50% of the season
+    """
     np.random.seed(run_count)
     lg_h = {s: bat_all[s].mean() for s in MC_H_STATS if s in bat_all.columns}
     lg_p = {s: pit_all[s].mean() for s in MC_P_STATS if s in pit_all.columns}
 
     def pull(mu, la, strength):
         return mu * (1 - strength) + la * strength
+
+    def apply_injury(sims, counting_stats, inj_prob):
+        """Per-player injury: each sim independently draws whether injured,
+        then how much of the season is lost (15–50% of games)."""
+        if inj_prob <= 0:
+            return sims
+        # Each sim: did this player get hurt? (independent per player per sim)
+        hurt    = np.random.random(n_sim) < inj_prob
+        # Severity: fraction of season missed, uniform 0.15–0.50
+        pct_out = np.random.uniform(0.15, 0.50, n_sim)
+        scale   = np.where(hurt, 1.0 - pct_out, 1.0)   # 1.0 if healthy, <1 if hurt
+        for s in counting_stats:
+            if s in sims.columns:
+                sims[s] = np.clip(sims[s] * scale, 0, None)
+        return sims
 
     sim_h = {c: np.zeros(n_sim) for c in MC_H_CATS}
     player_sims = {}
@@ -648,11 +671,7 @@ def mc_run_simulation(hitters, pitchers, n_sim, injury_pct,
             bmu, _ = dist["Barrel%"]; hmu, hsd = dist["HR"]
             dist["HR"] = (hmu * 1.10 if bmu > 0.12 else hmu * 0.92 if bmu < 0.07 else hmu, hsd)
         sims = _mc_sim_player(dist, n_sim, MC_H_STATS, MC_COUNT_FLOORS)
-        imask = np.random.random(n_sim) < 0.30
-        red   = np.random.uniform(injury_pct * 0.5, injury_pct * 1.5, n_sim)
-        for s in ["HR", "R", "RBI", "SB"]:
-            if s in sims.columns:
-                sims[s] = np.clip(np.where(imask, sims[s] * (1 - red), sims[s]), 0, None)
+        sims = apply_injury(sims, ["HR", "R", "RBI", "SB"], injury_pct)
         player_sims[name] = sims
         for s in ["HR", "R", "RBI", "SB"]:
             if s in sims.columns: sim_h[s] += sims[s].values
@@ -670,11 +689,7 @@ def mc_run_simulation(hitters, pitchers, n_sim, injury_pct,
             swmu, _ = dist["SwStr%"]; somu, sosd = dist["SO"]
             dist["SO"] = (somu * 1.08 if swmu > 0.14 else somu * 0.93 if swmu < 0.09 else somu, sosd)
         sims = _mc_sim_player(dist, n_sim, MC_P_STATS, MC_COUNT_FLOORS)
-        imask = np.random.random(n_sim) < 0.25
-        red   = np.random.uniform(injury_pct * 0.5, injury_pct * 1.5, n_sim)
-        for s in ["W", "SO"]:
-            if s in sims.columns:
-                sims[s] = np.clip(np.where(imask, sims[s] * (1 - red), sims[s]), 0, None)
+        sims = apply_injury(sims, ["W", "SO"], injury_pct)
         player_sims[name] = sims
         for s in ["W", "SO"]:
             if s in sims.columns: sim_p[s] += sims[s].values
@@ -1494,8 +1509,8 @@ elif page == "🎲 Monte Carlo Sim":
         default=[p for p in pre_p if p in all_p_names_mc], max_selections=10, key="mc_pitchers")
 
     adv1, adv2, adv3 = st.columns(3)
-    injury_pct_val   = adv1.slider("Injury / games-lost risk (%)", 0, 40, 15,
-        help="Each sim randomly reduces counting stats for ~30% of sims.")
+    injury_pct_val   = adv1.slider("Injury risk per player (%)", 0, 40, 15,
+        help="Probability (%) that each player suffers an IL stint this season. When injured, they miss 15–50% of games. 0% = no injuries modeled. 15% = realistic baseline. 40% = high-injury pessimistic scenario.")
     regr_pull_val    = adv2.slider("Mean-reversion strength", 0.0, 1.0, 0.3, 0.05,
         help="0 = raw historical mean. 1 = fully regress to league average.")
     platoon_val      = adv3.checkbox("Apply Barrel%/SwStr% quality multiplier", value=True)
