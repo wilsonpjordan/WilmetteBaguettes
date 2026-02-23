@@ -219,8 +219,8 @@ def load_data():
     if "Position" not in bat_all.columns:
         bat_all["Position"] = "—"
     latest  = int(bat_all["Season"].max())
-    bat_rec = deep_analysis(score_hitters(bat_all[bat_all["Season"] == latest].copy()), bat_all, "hitter")
-    pit_rec = deep_analysis(score_pitchers(pit_all[pit_all["Season"] == latest].copy()), pit_all, "pitcher")
+    bat_rec = score_hitters(bat_all[bat_all["Season"] == latest].copy())
+    pit_rec = score_pitchers(pit_all[pit_all["Season"] == latest].copy())
     return bat_all, pit_all, bat_rec, pit_rec, latest
 
 
@@ -279,277 +279,8 @@ def score_pitchers(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ─────────────────────────────────────────────────────────────
-#  DEEP ANALYSIS ENGINE
-# ─────────────────────────────────────────────────────────────
-
-def _trend_slope(series: list) -> float:
-    if len(series) < 2:
-        return 0.0
-    x = np.arange(len(series))
-    slope, *_ = scipy_stats.linregress(x, series)
-    return float(slope)
-
-
-def deep_analysis(df: pd.DataFrame, all_df: pd.DataFrame, ptype: str) -> pd.DataFrame:
-    df = df.copy()
-    regression_risks, breakout_scores, regression_scores = [], [], []
-    profile_tags, summaries = [], []
-
-    for _, row in df.iterrows():
-        name = row.get("Name", "")
-        hist = all_df[all_df["Name"] == name].sort_values("Season")
-        reg_flags, breakout_sigs, summary_lines = [], [], []
-
-        if ptype == "hitter":
-            avg    = row.get("AVG",   np.nan); xba    = row.get("xBA",    np.nan)
-            babip  = row.get("BABIP", np.nan); hard   = row.get("Hard%",  np.nan)
-            barrel = row.get("Barrel%",np.nan); hr    = row.get("HR",     np.nan)
-            pa     = row.get("PA",    600);     sb    = row.get("SB",     np.nan)
-            spd    = row.get("Spd",   np.nan); kpct   = row.get("K%",    np.nan)
-            bbpct  = row.get("BB%",   np.nan); ev    = row.get("EV",     np.nan)
-            la     = row.get("LA",    np.nan); wrcplus= row.get("wRC+",  np.nan)
-            age    = row.get("Age",   27)
-
-            if pd.notna(avg) and pd.notna(xba):
-                diff = avg - xba
-                if diff > 0.030:
-                    reg_flags.append(f"AVG ({avg:.3f}) outpacing xBA ({xba:.3f}) by +{diff:.3f} — expect decline")
-                elif diff < -0.025:
-                    breakout_sigs.append(f"AVG ({avg:.3f}) below xBA ({xba:.3f}) by {diff:.3f} — AVG should rise")
-
-            if pd.notna(babip):
-                if babip > 0.340 and (pd.isna(hard) or hard < 0.40):
-                    reg_flags.append(f"BABIP ({babip:.3f}) well above league avg (.295) without elite contact quality")
-                elif babip < 0.265 and pd.notna(hard) and hard > 0.38:
-                    breakout_sigs.append(f"BABIP ({babip:.3f}) unusually low despite solid Hard% ({hard:.1%}) — due for positive BABIP luck")
-
-            if pd.notna(hr) and pd.notna(barrel) and pa and pa > 0:
-                hr_rate = hr / pa
-                if hr_rate > 0.058 and barrel < 0.09:
-                    reg_flags.append(f"HR/PA ({hr_rate:.3f}) elevated vs Barrel% ({barrel:.1%}) — HR total likely to drop")
-                elif barrel > 0.12 and hr_rate < 0.035:
-                    breakout_sigs.append(f"Elite Barrel% ({barrel:.1%}) not yet reflected in HR count — power breakout candidate")
-
-            if pd.notna(ev) and pd.notna(la):
-                if ev > 91 and 10 <= la <= 18:
-                    breakout_sigs.append(f"Elite EV ({ev} mph) + optimal launch angle ({la}°) — elite contact profile")
-                elif ev < 87:
-                    reg_flags.append(f"Below-avg EV ({ev} mph) suggests contact quality concern")
-
-            if pd.notna(kpct):
-                if kpct > 0.28:
-                    reg_flags.append(f"High K% ({kpct:.1%}) limits floor in AVG/OBP categories")
-                elif kpct < 0.16 and pd.notna(bbpct) and bbpct > 0.10:
-                    breakout_sigs.append(f"Elite plate discipline: K% ({kpct:.1%}) + BB% ({bbpct:.1%}) — sustainable OBP/AVG")
-
-            if pd.notna(sb) and pd.notna(spd):
-                if sb > 25 and spd < 4.5:
-                    reg_flags.append(f"High SB ({int(sb)}) vs low Spd score ({spd}) — SB pace unsustainable")
-                elif spd > 7.0 and sb < 15:
-                    breakout_sigs.append(f"Elite speed (Spd {spd}) underutilized — SB breakout possible with green light")
-
-            if pd.notna(age):
-                if age <= 25 and pd.notna(wrcplus) and wrcplus > 115:
-                    breakout_sigs.append(f"Age {int(age)} with wRC+ {int(wrcplus)} — still on upside of development curve")
-                elif age >= 33:
-                    reg_flags.append(f"Age {int(age)} — age-related decline risk increases")
-
-            if len(hist) >= 3:
-                for stat, direction in [("wRC+","up"),("Barrel%","up"),("K%","down")]:
-                    if stat in hist.columns:
-                        vals = hist[stat].dropna().tolist()[-3:]
-                        if len(vals) >= 3:
-                            slope = _trend_slope(vals)
-                            if direction == "up" and slope > 0:
-                                breakout_sigs.append(f"{stat} trending up over last {len(vals)} seasons (slope +{slope:.2f}/yr)")
-                            elif direction == "down" and slope < 0:
-                                breakout_sigs.append(f"K% trending down (slope {slope:.2f}/yr) — improving contact")
-                            elif direction == "up" and slope < -0.5:
-                                reg_flags.append(f"{stat} declining trend over last {len(vals)} seasons")
-
-        else:  # pitcher
-            era   = row.get("ERA",   np.nan); xfip  = row.get("xFIP",  np.nan)
-            siera = row.get("SIERA", np.nan); lob   = row.get("LOB%",  np.nan)
-            babip = row.get("BABIP", np.nan); hrfb  = row.get("HR/FB", np.nan)
-            kpct  = row.get("K%",    np.nan); bbpct = row.get("BB%",   np.nan)
-            swstr = row.get("SwStr%",np.nan); gb    = row.get("GB%",   np.nan)
-            age   = row.get("Age",   28);     csw   = row.get("CSW%",  np.nan)
-
-            if pd.notna(era) and pd.notna(xfip):
-                gap = xfip - era
-                if gap > 0.70:
-                    reg_flags.append(f"ERA ({era:.2f}) significantly below xFIP ({xfip:.2f}) — ERA correction expected (+{gap:.2f})")
-                elif gap < -0.60:
-                    breakout_sigs.append(f"ERA ({era:.2f}) inflated vs xFIP ({xfip:.2f}) — true skill better than results ({gap:.2f})")
-
-            if pd.notna(era) and pd.notna(siera):
-                gap = siera - era
-                if gap > 0.65:
-                    reg_flags.append(f"ERA ({era:.2f}) also below SIERA ({siera:.2f}) — multiple models agree on regression")
-
-            if pd.notna(lob):
-                if lob > 0.80:
-                    reg_flags.append(f"LOB% ({lob:.1%}) unsustainably high (league avg ~72%) — ERA/WHIP will worsen")
-                elif lob < 0.66:
-                    breakout_sigs.append(f"LOB% ({lob:.1%}) unluckily low — ERA/WHIP should improve with normal strand rates")
-
-            if pd.notna(babip):
-                if babip < 0.262:
-                    reg_flags.append(f"Low BABIP ({babip:.3f}) propping up ERA — opponents will get more hits")
-                elif babip > 0.318:
-                    breakout_sigs.append(f"High BABIP ({babip:.3f}) inflating ERA — underlying stuff is better than results show")
-
-            if pd.notna(hrfb):
-                if hrfb < 0.072:
-                    reg_flags.append(f"HR/FB ({hrfb:.1%}) below average — HRs allowed will normalize upward")
-                elif hrfb > 0.145:
-                    breakout_sigs.append(f"HR/FB ({hrfb:.1%}) elevated — could drop, improving ERA")
-
-            if pd.notna(kpct) and pd.notna(swstr):
-                if kpct > 0.28 and swstr > 0.13:
-                    breakout_sigs.append(f"Elite strikeout profile: K% {kpct:.1%} + SwStr% {swstr:.1%} — sustainable ace-level stuff")
-            if pd.notna(bbpct) and bbpct > 0.11:
-                reg_flags.append(f"High BB% ({bbpct:.1%}) — control issues elevate ERA/WHIP ceiling")
-            if pd.notna(gb) and gb > 0.52:
-                breakout_sigs.append(f"Elite GB% ({gb:.1%}) limits HR exposure — good for ERA stability")
-            if pd.notna(csw) and csw > 0.32:
-                breakout_sigs.append(f"High CSW% ({csw:.1%}) — above-average pitch quality / command")
-
-            if pd.notna(age):
-                if age <= 26 and pd.notna(kpct) and kpct > 0.24:
-                    breakout_sigs.append(f"Young arm (age {int(age)}) with strong K% ({kpct:.1%}) — development upside remains")
-                elif age >= 35:
-                    reg_flags.append(f"Age {int(age)} — injury and decline risk elevated for pitchers")
-
-            if len(hist) >= 3:
-                for stat, direction in [("K%","up"),("BB%","down"),("ERA","down")]:
-                    if stat in hist.columns:
-                        vals = hist[stat].dropna().tolist()[-3:]
-                        if len(vals) >= 3:
-                            slope = _trend_slope(vals)
-                            if direction == "up" and slope > 0.005:
-                                breakout_sigs.append(f"{stat} trending up last {len(vals)} seasons (+{slope:.3f}/yr)")
-                            elif direction == "down" and slope < 0:
-                                breakout_sigs.append(f"{stat} improving last {len(vals)} seasons ({slope:.3f}/yr)")
-                            elif direction == "down" and slope > 0.2:
-                                reg_flags.append(f"{stat} trending worse last {len(vals)} seasons (+{slope:.3f}/yr)")
-
-        b_score = min(100, len(breakout_sigs) * 22 + (5 if len(hist) >= 4 else 0))
-        r_score = min(100, len(reg_flags) * 22)
-
-        # Profile tag
-        if ptype == "hitter":
-            barrel_t = row.get("Barrel%", np.nan); spd_t  = row.get("Spd",  np.nan)
-            age_t    = row.get("Age",      28);     wrc_t  = row.get("wRC+", np.nan)
-            sb_t     = row.get("SB",       np.nan); kpct_t = row.get("K%",   np.nan)
-            if   b_score >= 66 and r_score < 22:  tag = "🚀 Elite Breakout"
-            elif b_score >= 44 and r_score < 22:  tag = "📈 Breakout Candidate"
-            elif r_score >= 66:                   tag = "🚨 High Regression Risk"
-            elif r_score >= 44 and b_score < 22:  tag = "📉 Regression Risk"
-            elif b_score >= 44 and r_score >= 44: tag = "⚖️ High Ceiling / High Risk"
-            elif b_score >= 22 and r_score >= 22: tag = "⚖️ Mixed Signals"
-            elif pd.notna(age_t) and age_t <= 24 and pd.notna(wrc_t) and wrc_t > 110: tag = "🌱 Young Talent"
-            elif pd.notna(spd_t) and spd_t > 7.0 and pd.notna(sb_t) and sb_t < 15:   tag = "💨 Speed Sleeper"
-            elif pd.notna(barrel_t) and barrel_t > 0.12 and b_score > 0:              tag = "💣 Power Upside"
-            elif pd.notna(kpct_t) and kpct_t < 0.15 and b_score > 0:                 tag = "🎯 Contact Upside"
-            elif b_score > 0:  tag = "👀 Undervalued"
-            elif r_score > 0:  tag = "⚠️ Slight Risk"
-            else:              tag = "✅ Stable"
-        else:
-            kpct_t  = row.get("K%",     np.nan); gb_t    = row.get("GB%",    np.nan)
-            age_t   = row.get("Age",    28);      swstr_t = row.get("SwStr%", np.nan)
-            if   b_score >= 66 and r_score < 22:  tag = "🚀 Ace Breakout"
-            elif b_score >= 44 and r_score < 22:  tag = "📈 Breakout Candidate"
-            elif r_score >= 66:                   tag = "🚨 High Regression Risk"
-            elif r_score >= 44 and b_score < 22:  tag = "📉 Regression Risk"
-            elif b_score >= 44 and r_score >= 44: tag = "⚖️ High Ceiling / High Risk"
-            elif b_score >= 22 and r_score >= 22: tag = "⚖️ Mixed Signals"
-            elif pd.notna(age_t) and age_t <= 25 and pd.notna(kpct_t) and kpct_t > 0.24: tag = "🌱 Young Arm"
-            elif pd.notna(gb_t) and gb_t > 0.52 and b_score > 0:                          tag = "🪱 GB Specialist Upside"
-            elif pd.notna(swstr_t) and swstr_t > 0.14 and b_score > 0:                    tag = "🎯 Swing-Miss Upside"
-            elif b_score > 0:  tag = "👀 Undervalued"
-            elif r_score > 0:  tag = "⚠️ Slight Risk"
-            else:              tag = "✅ Stable"
-
-        risk = "High" if r_score >= 44 else "Medium" if r_score >= 22 else "Low"
-
-        # Narrative
-        narrative_parts = []
-        if ptype == "hitter":
-            wrc_n = row.get("wRC+", np.nan); barrel_n = row.get("Barrel%", np.nan)
-            hr_n  = row.get("HR",   np.nan); sb_n     = row.get("SB",      np.nan)
-            spd_n = row.get("Spd",  np.nan); age_n    = row.get("Age",     28)
-            if pd.notna(wrc_n):
-                if   wrc_n >= 140: narrative_parts.append(f"One of the most productive hitters in baseball with a wRC+ of {int(wrc_n)}, placing him in elite company.")
-                elif wrc_n >= 120: narrative_parts.append(f"A legitimate fantasy anchor with a wRC+ of {int(wrc_n)}, consistently producing above-average value.")
-                elif wrc_n >= 100: narrative_parts.append(f"A solid contributor with a wRC+ of {int(wrc_n)}, providing league-average or better production.")
-                else:              narrative_parts.append(f"A below-average hitter by wRC+ ({int(wrc_n)}), limiting his ceiling in rate categories.")
-            if pd.notna(barrel_n) and pd.notna(hr_n):
-                if   barrel_n >= 0.14: narrative_parts.append(f"His Barrel% of {barrel_n:.1%} is elite-tier — his HR output ({int(hr_n)}) is well-supported by real contact quality.")
-                elif barrel_n >= 0.09: narrative_parts.append(f"With a Barrel% of {barrel_n:.1%}, his power is real but not top-tier — a reliable mid-range HR contributor.")
-                else:                  narrative_parts.append(f"A below-average Barrel% ({barrel_n:.1%}) suggests his power numbers may be driven more by luck than contact quality.")
-            if pd.notna(sb_n) and pd.notna(spd_n):
-                if   sb_n >= 30 and spd_n >= 6.0: narrative_parts.append(f"Elite speed profile — {int(sb_n)} SB backed by Spd score of {spd_n} makes him a top SB asset.")
-                elif sb_n >= 20:                   narrative_parts.append(f"A useful SB contributor with {int(sb_n)} steals, though his Spd score of {spd_n} warrants monitoring.")
-                elif spd_n >= 7.0 and sb_n < 15:  narrative_parts.append(f"Elite speed score ({spd_n}) is being underutilized — a green light or lineup change could unlock SB upside.")
-            if pd.notna(age_n):
-                if   age_n <= 23: narrative_parts.append(f"At just {int(age_n)}, he's barely scratched the surface of his development ceiling — buy-high is still appropriate.")
-                elif age_n <= 27: narrative_parts.append(f"At {int(age_n)}, he's in the prime performance window — expect stable or improving production.")
-                elif age_n >= 34: narrative_parts.append(f"At {int(age_n)}, age-related decline is a real concern. Monitor spring training before investing heavily.")
-        else:
-            era_n   = row.get("ERA",    np.nan); xfip_n  = row.get("xFIP",   np.nan)
-            kpct_n  = row.get("K%",     np.nan); bbpct_n = row.get("BB%",    np.nan)
-            swstr_n = row.get("SwStr%", np.nan); gb_n    = row.get("GB%",    np.nan)
-            age_n   = row.get("Age",    28)
-            if pd.notna(era_n) and pd.notna(xfip_n):
-                if   era_n <= 3.00 and xfip_n <= 3.20: narrative_parts.append(f"An elite pitcher — ERA of {era_n:.2f} backed by xFIP of {xfip_n:.2f} means his dominance is real and repeatable.")
-                elif era_n <= 3.50 and xfip_n <= 3.50: narrative_parts.append(f"A legitimate No.1/2 starter. ERA ({era_n:.2f}) and xFIP ({xfip_n:.2f}) are aligned, supporting strong future performance.")
-                elif era_n > xfip_n + 0.60:            narrative_parts.append(f"ERA ({era_n:.2f}) is being inflated by bad luck — xFIP of {xfip_n:.2f} suggests he's pitching much better than results. Buy low.")
-                elif xfip_n > era_n + 0.60:            narrative_parts.append(f"ERA ({era_n:.2f}) looks better than underlying metrics (xFIP {xfip_n:.2f}) — some regression in ERA/WHIP is likely. Sell high.")
-            if pd.notna(kpct_n) and pd.notna(swstr_n):
-                if   kpct_n >= 0.30 and swstr_n >= 0.14: narrative_parts.append(f"Dominant arsenal: K% {kpct_n:.1%} and SwStr% {swstr_n:.1%} put him among the game's elite strikeout arms.")
-                elif kpct_n >= 0.24:                      narrative_parts.append(f"Above-average K rate ({kpct_n:.1%}) makes him a reliable strikeout contributor.")
-                elif kpct_n < 0.18:                       narrative_parts.append(f"Below-average K rate ({kpct_n:.1%}) limits his K upside — best as ERA/WHIP streamer.")
-            if pd.notna(bbpct_n):
-                if   bbpct_n < 0.06: narrative_parts.append(f"Exceptional command (BB% {bbpct_n:.1%}) is a major ERA/WHIP stabilizer.")
-                elif bbpct_n > 0.10: narrative_parts.append(f"Control issues (BB% {bbpct_n:.1%}) create week-to-week volatility in ERA and WHIP.")
-            if pd.notna(gb_n) and gb_n >= 0.52:
-                narrative_parts.append(f"Elite groundball rate ({gb_n:.1%}) naturally suppresses HRs and stabilizes ERA.")
-            if pd.notna(age_n):
-                if   age_n <= 25: narrative_parts.append(f"Still only {int(age_n)} — more development likely ahead, ceiling not yet reached.")
-                elif age_n >= 35: narrative_parts.append(f"At {int(age_n)}, durability is the primary concern. Monitor workload and IL history.")
-
-        narrative = " ".join(narrative_parts)
-        if narrative:
-            summary_lines = ["📝 **Scouting Summary:**\n" + narrative, "---"]
-        if breakout_sigs:
-            summary_lines.append("🟢 **Breakout signals:**")
-            summary_lines += [f"  • {s}" for s in breakout_sigs]
-        if reg_flags:
-            summary_lines.append("🔴 **Regression flags:**")
-            summary_lines += [f"  • {s}" for s in reg_flags]
-        if not breakout_sigs and not reg_flags:
-            summary_lines.append("Profile looks stable — no major flags in either direction.")
-
-        regression_risks.append(risk); breakout_scores.append(b_score)
-        regression_scores.append(r_score); profile_tags.append(tag)
-        summaries.append("\n".join(summary_lines))
-
-    df["regression_risk"]  = regression_risks
-    df["breakout_score"]   = breakout_scores
-    df["regression_score"] = regression_scores
-    df["profile_tag"]      = profile_tags
-    df["analysis_summary"] = summaries
-    return df
-
-
-# ─────────────────────────────────────────────────────────────
 #  DISPLAY HELPERS
 # ─────────────────────────────────────────────────────────────
-
-def style_risk(val):
-    c = {"High":"#FF4B4B","Medium":"#FFA500","Low":"#21C354"}.get(val,"")
-    return f"color:{c}; font-weight:bold" if c else ""
 
 def style_z(val):
     try:
@@ -558,16 +289,6 @@ def style_z(val):
         if v >  0.5: return "background-color:#2d5a3d"
         if v < -1.0: return "background-color:#5c1a1a"
         if v < -0.5: return "background-color:#7b2d2d"
-    except Exception:
-        pass
-    return ""
-
-def style_breakout(val):
-    try:
-        v = int(val)
-        if v >= 66: return "background-color:#1a472a; color:#21C354; font-weight:bold"
-        if v >= 33: return "background-color:#2d5a3d"
-        if v <= 10: return "color:#888"
     except Exception:
         pass
     return ""
@@ -1010,7 +731,6 @@ st.sidebar.markdown("---")
 page = st.sidebar.radio("Navigate", [
     "📋 Draft Board",
     "🔍 Player Deep Dive",
-    "🧠 Regression & Breakout",
     "📊 Category Scarcity",
     "🎯 Strategy & Target List",
     "⚙️ Weight Dashboard",
@@ -1041,48 +761,38 @@ if page == "📋 Draft Board":
     st.caption(f"Composite z-score rankings — {LATEST} season. Green = above avg, red = below avg.")
     ptype = st.radio("", ["Hitters","Pitchers"], horizontal=True)
     df    = bat_rec.copy() if ptype == "Hitters" else pit_rec.copy()
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2 = st.columns(2)
     teams  = ["All"] + sorted(df["Team"].dropna().unique().tolist())
     team_f = c1.selectbox("Team", teams)
     if ptype == "Hitters" and "Position" in df.columns:
         pos_f = c2.selectbox("Position", ["All"] + sorted(df["Position"].dropna().unique().tolist()))
     else:
         pos_f = "All"
-    risk_f = c3.selectbox("Regression Risk", ["All","Low","Medium","High"])
-    tag_f  = c4.selectbox("Profile", ["All"] + sorted(df["profile_tag"].dropna().unique().tolist()))
     if team_f != "All": df = df[df["Team"] == team_f]
     if pos_f  != "All" and "Position" in df.columns: df = df[df["Position"] == pos_f]
-    if risk_f != "All": df = df[df["regression_risk"] == risk_f]
-    if tag_f  != "All": df = df[df["profile_tag"] == tag_f]
     z_cols  = [c for c in df.columns if c.startswith("z_")]
-    sort_by = st.selectbox("Sort by", ["composite"] + z_cols + ["breakout_score","regression_score"])
+    sort_by = st.selectbox("Sort by", ["composite"] + z_cols)
     df = df.sort_values(sort_by, ascending=False).reset_index(drop=True)
     df.index += 1
     if ptype == "Hitters":
-        show = ["Name","Team","profile_tag","composite","HR","R","RBI","SB","AVG",
-                "wRC+","xwOBA","Barrel%","xBA","z_HR","z_R","z_RBI","z_SB","z_AVG",
-                "breakout_score","regression_score","regression_risk"]
+        show = ["Name","Team","composite","HR","R","RBI","SB","AVG",
+                "wRC+","xwOBA","Barrel%","xBA","z_HR","z_R","z_RBI","z_SB","z_AVG"]
     else:
-        show = ["Name","Team","profile_tag","composite","W","ERA","WHIP","SO",
-                "xFIP","SIERA","K%","SwStr%","LOB%","z_W","z_ERA","z_WHIP","z_K",
-                "breakout_score","regression_score","regression_risk"]
+        show = ["Name","Team","composite","W","ERA","WHIP","SO",
+                "xFIP","SIERA","K%","SwStr%","LOB%","z_W","z_ERA","z_WHIP","z_K"]
     show = [c for c in show if c in df.columns]
     z_present = [c for c in show if c.startswith("z_")]
     styled = (
         df[show].style
-        .map(style_risk,     subset=["regression_risk"])
         .map(style_z,        subset=z_present)
-        .map(style_breakout, subset=["breakout_score"])
         .background_gradient(subset=["composite"], cmap="RdYlGn")
         .format({c: "{:.2f}" for c in ["composite"] + z_present})
     )
     st.dataframe(styled, use_container_width=True, height=560)
-    m1, m2, m3, m4, m5 = st.columns(5)
+    m1, m2, m3 = st.columns(3)
     m1.metric("Players",       len(df))
-    m2.metric("High Risk",     int((df["regression_risk"]=="High").sum()))
-    m3.metric("Breakouts",     int((df["breakout_score"] >= 44).sum()))
-    m4.metric("Avg composite", f"{df['composite'].mean():.2f}")
-    m5.metric("Top player",    df.iloc[0]["Name"] if len(df) else "—")
+    m2.metric("Avg composite", f"{df['composite'].mean():.2f}")
+    m3.metric("Top player",    df.iloc[0]["Name"] if len(df) else "—")
 
 
 # ═════════════════════════════════════════════════════════════
@@ -1103,25 +813,8 @@ elif page == "🔍 Player Deep Dive":
     team = hist.iloc[-1].get("Team","—"); age = hist.iloc[-1].get("Age","—")
     st.markdown(f"## {name}  `{team}`  Age {age}")
     if not rec.empty:
-        tag    = rec.iloc[0].get("profile_tag","✅ Stable")
-        bscore = rec.iloc[0].get("breakout_score", 0)
-        rscore = rec.iloc[0].get("regression_score", 0)
-        summary= rec.iloc[0].get("analysis_summary","")
-        tc1, tc2, tc3 = st.columns(3)
-        tc1.markdown(f"**Profile:** {tag}")
-        tc2.metric("Breakout Score",   f"{bscore}/100")
-        tc3.metric("Regression Score", f"{rscore}/100")
-        if summary:
-            with st.expander("📋 Full Analysis", expanded=True):
-                for line in summary.split("\n"):
-                    if line.startswith("📝 **Scouting Summary:**"):
-                        st.markdown("<p style='font-size:13px;font-weight:bold;margin-bottom:4px'>📝 Scouting Summary</p>", unsafe_allow_html=True)
-                    elif line == "---":
-                        st.markdown("<hr style='margin:8px 0;border-color:#333'>", unsafe_allow_html=True)
-                    elif line and not line.startswith("  •") and not line.startswith("🟢") and not line.startswith("🔴"):
-                        st.markdown(f"<p style='font-size:13px;color:#ccc;line-height:1.6;margin:0'>{line}</p>", unsafe_allow_html=True)
-                    else:
-                        st.markdown(line)
+        if not rec.empty and "composite" in rec.columns:
+            st.metric("Draft Value Score", f"{float(rec.iloc[0].get('composite', 0)):.2f}")
     st.markdown("---")
     if ptype == "Hitter":
         key = ["HR","R","RBI","SB","AVG","wRC+","xwOBA","xBA","Barrel%","BB%","K%","EV"]
@@ -1491,7 +1184,7 @@ elif page == "🔍 Player Deep Dive":
     note_input = st.text_input("Add a note (optional)", key="dive_note")
     if st.button(f"🎯 Add {name} to Target List"):
         entry = {"name": name, "type": ptype,
-                 "tag":  rec.iloc[0].get("profile_tag","—") if not rec.empty else "—",
+                 "tag":  "—",
                  "composite": float(rec.iloc[0].get("composite",0)) if not rec.empty else 0,
                  "note": note_input}
         if not any(t["name"] == name for t in st.session_state.targets):
@@ -1500,94 +1193,8 @@ elif page == "🔍 Player Deep Dive":
             st.info(f"{name} is already in your target list.")
     st.markdown("---")
     st.markdown("### 📄 Full Historical Stats")
-    drop = [c for c in ["playerid","regression_risk","regression_score","breakout_score",
-                         "profile_tag","analysis_summary","rank","composite"] if c in hist.columns]
+    drop = [c for c in ["playerid","rank","composite"] if c in hist.columns]
     st.dataframe(hist.drop(columns=drop).set_index("Season"), use_container_width=True)
-
-
-# ═════════════════════════════════════════════════════════════
-#  PAGE 3 — REGRESSION & BREAKOUT
-# ═════════════════════════════════════════════════════════════
-
-elif page == "🧠 Regression & Breakout":
-    st.title("🧠 Regression & Breakout Analysis")
-    st.caption("Deep dives into who is due for a correction and who is poised to take off.")
-    ptype = st.radio("", ["Hitters","Pitchers"], horizontal=True)
-    df = bat_rec.copy() if ptype == "Hitters" else pit_rec.copy()
-    tab_break, tab_reg, tab_mixed = st.tabs(["🚀 Breakout Candidates","📉 Regression Risks","⚖️ Mixed / Undervalued"])
-
-    with tab_break:
-        st.markdown("### 🚀 Breakout Candidates")
-        breakouts = df[df["breakout_score"] >= 33].sort_values("breakout_score", ascending=False)
-        if breakouts.empty:
-            st.info("No breakout candidates found.")
-        else:
-            for _, row in breakouts.head(15).iterrows():
-                with st.expander(f"**{row['Name']}** ({row.get('Team','—')})  —  Breakout Score: {int(row['breakout_score'])}/100  |  {row['profile_tag']}"):
-                    lines = [l for l in row.get("analysis_summary","").split("\n") if "🟢" in l or ("•" in l and "🔴" not in l)]
-                    for line in lines: st.markdown(line)
-                    key_s = (["composite","HR","AVG","xwOBA","xBA","Barrel%","wRC+","BABIP","Spd"]
-                             if ptype == "Hitters" else
-                             ["composite","ERA","xFIP","SIERA","K%","SwStr%","LOB%","GB%","BABIP"])
-                    key_s = [s for s in key_s if s in row.index]
-                    sc = st.columns(len(key_s))
-                    for i, s in enumerate(key_s):
-                        v = row.get(s, np.nan)
-                        if pd.notna(v):
-                            sc[i].metric(s, f"{v:.3f}" if isinstance(v,float) and v < 10 else str(round(v,1) if isinstance(v,float) else int(v)))
-                    if st.button("🎯 Add to Target List", key=f"add_break_{row['Name']}"):
-                        entry = {"name": row["Name"], "type": ptype.rstrip("s"),
-                                 "tag": row["profile_tag"], "composite": float(row["composite"]), "note": "Breakout candidate"}
-                        if not any(t["name"] == row["Name"] for t in st.session_state.targets):
-                            st.session_state.targets.append(entry); st.success(f"Added {row['Name']}!")
-
-    with tab_reg:
-        st.markdown("### 📉 Regression Risks")
-        risks = df[df["regression_score"] >= 33].sort_values("regression_score", ascending=False)
-        if risks.empty:
-            st.info("No major regression risks found.")
-        else:
-            for _, row in risks.head(15).iterrows():
-                with st.expander(f"**{row['Name']}** ({row.get('Team','—')})  —  Regression Score: {int(row['regression_score'])}/100  |  {row['profile_tag']}"):
-                    lines = [l for l in row.get("analysis_summary","").split("\n") if "🔴" in l or ("•" in l and "🟢" not in l)]
-                    for line in lines: st.markdown(line)
-                    key_s = (["composite","HR","AVG","xwOBA","xBA","Barrel%","BABIP"]
-                             if ptype == "Hitters" else
-                             ["composite","ERA","xFIP","SIERA","LOB%","BABIP","HR/FB"])
-                    key_s = [s for s in key_s if s in row.index]
-                    sc = st.columns(len(key_s))
-                    for i, s in enumerate(key_s):
-                        v = row.get(s, np.nan)
-                        if pd.notna(v):
-                            sc[i].metric(s, f"{v:.3f}" if isinstance(v,float) and v < 10 else str(round(v,1) if isinstance(v,float) else int(v)))
-
-    with tab_mixed:
-        st.markdown("### ⚖️ Mixed Signals & Undervalued")
-        df["value_gap"] = df["breakout_score"] - df["composite"] * 10
-        mixed = df[(df["profile_tag"].str.contains("Mixed|Undervalued|Trending Up", na=False)) | (df["value_gap"] > 20)].sort_values("value_gap", ascending=False)
-        if mixed.empty:
-            st.info("No mixed/undervalued players found.")
-        else:
-            for _, row in mixed.head(12).iterrows():
-                with st.expander(f"**{row['Name']}** — {row['profile_tag']}  |  Breakout: {int(row['breakout_score'])}  Regression: {int(row['regression_score'])}"):
-                    st.markdown(row.get("analysis_summary",""))
-                    if st.button("🎯 Add to Target List", key=f"add_mixed_{row['Name']}"):
-                        entry = {"name": row["Name"], "type": ptype.rstrip("s"),
-                                 "tag": row["profile_tag"], "composite": float(row["composite"]), "note": "Undervalued / mixed signals"}
-                        if not any(t["name"] == row["Name"] for t in st.session_state.targets):
-                            st.session_state.targets.append(entry); st.success(f"Added {row['Name']}!")
-
-    st.markdown("---")
-    st.markdown("### 📉📈 Breakout vs Composite Score Scatter")
-    fig_sc = px.scatter(df, x="composite", y="breakout_score", hover_name="Name", color="regression_risk",
-        color_discrete_map={"High":"#FF4B4B","Medium":"#FFA500","Low":"#21C354"},
-        size="breakout_score", size_max=20, template="plotly_dark",
-        labels={"composite":"Composite Draft Value","breakout_score":"Breakout Score"},
-        title="Top-right = high value + high upside  |  Bottom-left = low value + no upside")
-    fig_sc.add_hline(y=33, line_dash="dash", line_color="gray", opacity=0.5)
-    fig_sc.add_vline(x=0,  line_dash="dash", line_color="gray", opacity=0.5)
-    fig_sc.update_layout(height=450)
-    st.plotly_chart(fig_sc, use_container_width=True)
 
 
 # ═════════════════════════════════════════════════════════════
@@ -1619,7 +1226,7 @@ elif page == "📊 Category Scarcity":
     fig.add_vline(x=p90, line_dash="dash", line_color="#FF4B4B", annotation_text="Elite")
     fig.update_layout(height=360); st.plotly_chart(fig, use_container_width=True)
     top10 = src.nsmallest(10,col) if lower else src.nlargest(10,col)
-    show_c = [c for c in ["Name","Team",col,"composite","breakout_score","regression_risk"] if c in top10.columns]
+    show_c = [c for c in ["Name","Team",col,"composite"] if c in top10.columns]
     st.markdown(f"**Top 10 — {cat_choice}**")
     st.dataframe(top10[show_c].reset_index(drop=True), use_container_width=True)
     st.markdown("---"); st.markdown("### 💡 Strategy Tips")
@@ -1681,11 +1288,11 @@ elif page == "🎯 Strategy & Target List":
                     sug_p = pit_rec[(pit_rec["rank"]>=lo)&(pit_rec["rank"]<=hi)].head(3)
                     if not sug_h.empty:
                         st.markdown("**Hitter targets:**")
-                        h_c = [c for c in ["Name","Team","composite","HR","AVG","xwOBA","breakout_score","profile_tag"] if c in sug_h.columns]
+                        h_c = [c for c in ["Name","Team","composite","HR","AVG","xwOBA"] if c in sug_h.columns]
                         st.dataframe(sug_h[h_c], use_container_width=True, hide_index=True)
                     if not sug_p.empty:
                         st.markdown("**Pitcher targets:**")
-                        p_c = [c for c in ["Name","Team","composite","ERA","xFIP","K%","breakout_score","profile_tag"] if c in sug_p.columns]
+                        p_c = [c for c in ["Name","Team","composite","ERA","xFIP","K%"] if c in sug_p.columns]
                         st.dataframe(sug_p[p_c], use_container_width=True, hide_index=True)
         st.markdown("---"); st.markdown("#### 🔍 Category Gap Finder")
         if st.session_state.targets:
@@ -1716,7 +1323,7 @@ elif page == "🎯 Strategy & Target List":
                 rec_src = bat_rec if add_type=="Hitter" else pit_rec
                 rec_row = rec_src[rec_src["Name"]==add_name]
                 entry = {"name":add_name,"type":add_type,
-                    "tag":rec_row.iloc[0].get("profile_tag","—") if not rec_row.empty else "—",
+                    "tag":"—",
                     "composite":float(rec_row.iloc[0].get("composite",0)) if not rec_row.empty else 0,
                     "note":add_note}
                 if not any(t["name"]==add_name for t in st.session_state.targets):
@@ -1741,9 +1348,9 @@ elif page == "🎯 Strategy & Target List":
                     </div>""", unsafe_allow_html=True)
                 if not rec_row.empty:
                     r = rec_row.iloc[0]
-                    mini = ([c for c in ["HR","AVG","xwOBA","Barrel%","SB","wRC+","breakout_score"] if c in r.index]
+                    mini = ([c for c in ["HR","AVG","xwOBA","Barrel%","SB","wRC+"] if c in r.index]
                             if t["type"]=="Hitter" else
-                            [c for c in ["ERA","xFIP","K%","SwStr%","WHIP","breakout_score"] if c in r.index])
+                            [c for c in ["ERA","xFIP","K%","SwStr%","WHIP"] if c in r.index])
                     mcols = st.columns(len(mini))
                     for ci, s in enumerate(mini):
                         v = r.get(s, np.nan)
@@ -1765,7 +1372,7 @@ elif page == "🎯 Strategy & Target List":
             if h_targets:
                 st.markdown("#### Hitter Comparison")
                 h_df = bat_rec[bat_rec["Name"].isin([t["name"] for t in h_targets])]
-                cc = [c for c in ["Name","Team","composite","HR","R","RBI","SB","AVG","wRC+","xwOBA","xBA","Barrel%","SwStr%","breakout_score","regression_score","profile_tag"] if c in h_df.columns]
+                cc = [c for c in ["Name","Team","composite","HR","R","RBI","SB","AVG","wRC+","xwOBA","xBA","Barrel%","SwStr%"] if c in h_df.columns]
                 st.dataframe(h_df[cc].sort_values("composite",ascending=False).style.background_gradient(subset=["composite"],cmap="RdYlGn"), use_container_width=True, hide_index=True)
                 z_h = [c for c in ["z_HR","z_R","z_RBI","z_SB","z_AVG"] if c in h_df.columns]
                 if z_h:
@@ -1778,7 +1385,7 @@ elif page == "🎯 Strategy & Target List":
             if p_targets:
                 st.markdown("#### Pitcher Comparison")
                 p_df = pit_rec[pit_rec["Name"].isin([t["name"] for t in p_targets])]
-                cc = [c for c in ["Name","Team","composite","W","ERA","WHIP","SO","xFIP","SIERA","K%","SwStr%","LOB%","breakout_score","regression_score","profile_tag"] if c in p_df.columns]
+                cc = [c for c in ["Name","Team","composite","W","ERA","WHIP","SO","xFIP","SIERA","K%","SwStr%","LOB%"] if c in p_df.columns]
                 st.dataframe(p_df[cc].sort_values("composite",ascending=False).style.background_gradient(subset=["composite"],cmap="RdYlGn"), use_container_width=True, hide_index=True)
 
 
@@ -1953,10 +1560,10 @@ elif page == "🏟️ Draft Room":
         with tab_h:
             avail_h = bat_rec[~bat_rec["Name"].isin(st.session_state.drafted_h)].sort_values("composite",ascending=False).reset_index(drop=True)
             avail_h.index += 1
-            show_h = [c for c in ["Name","Team","profile_tag","composite","HR","R","RBI","SB","AVG","wRC+","xwOBA","Barrel%","breakout_score","z_HR","z_SB","regression_risk"] if c in avail_h.columns]
+            show_h = [c for c in ["Name","Team","composite","HR","R","RBI","SB","AVG","wRC+","xwOBA","Barrel%","z_HR","z_R","z_RBI","z_SB","z_AVG"] if c in avail_h.columns]
             is_target = avail_h["Name"].isin([t["name"] for t in st.session_state.targets])
             st.markdown(f"**{len(avail_h)} hitters available** &nbsp;|&nbsp; 🎯 {is_target.sum()} on your target list")
-            st.dataframe(avail_h[show_h].style.map(style_risk,subset=["regression_risk"]).map(style_z,subset=[c for c in show_h if c.startswith("z_")]).map(style_breakout,subset=["breakout_score"]), use_container_width=True, height=420)
+            st.dataframe(avail_h[show_h].style.map(style_z,subset=[c for c in show_h if c.startswith("z_")]).background_gradient(subset=["composite"],cmap="RdYlGn"), use_container_width=True, height=420)
             pick_h = st.selectbox("Select hitter", [""]+avail_h["Name"].tolist(), key="sel_h")
             ca, cb, cc = st.columns(3)
             if ca.button("✅ Add to MY team", key="btn_add_h") and pick_h:
@@ -1965,16 +1572,16 @@ elif page == "🏟️ Draft Room":
                 st.session_state.drafted_h.add(pick_h); st.rerun()
             if cc.button("🎯 Add to Targets", key="btn_target_h") and pick_h:
                 rr = bat_rec[bat_rec["Name"]==pick_h]
-                entry = {"name":pick_h,"type":"Hitter","tag":rr.iloc[0].get("profile_tag","—") if not rr.empty else "—",
+                entry = {"name":pick_h,"type":"Hitter","tag":"—",
                     "composite":float(rr.iloc[0].get("composite",0)) if not rr.empty else 0,"note":"Added from draft room"}
                 if not any(t["name"]==pick_h for t in st.session_state.targets):
                     st.session_state.targets.append(entry); st.success(f"🎯 {pick_h} added to targets!")
         with tab_p:
             avail_p = pit_rec[~pit_rec["Name"].isin(st.session_state.drafted_p)].sort_values("composite",ascending=False).reset_index(drop=True)
             avail_p.index += 1
-            show_p = [c for c in ["Name","Team","profile_tag","composite","W","ERA","WHIP","SO","xFIP","SIERA","K%","breakout_score","z_ERA","z_K","regression_risk"] if c in avail_p.columns]
+            show_p = [c for c in ["Name","Team","composite","W","ERA","WHIP","SO","xFIP","SIERA","K%","z_W","z_ERA","z_WHIP","z_K"] if c in avail_p.columns]
             st.markdown(f"**{len(avail_p)} pitchers available**")
-            st.dataframe(avail_p[show_p].style.map(style_risk,subset=["regression_risk"]).map(style_z,subset=[c for c in show_p if c.startswith("z_")]).map(style_breakout,subset=["breakout_score"]), use_container_width=True, height=420)
+            st.dataframe(avail_p[show_p].style.map(style_z,subset=[c for c in show_p if c.startswith("z_")]).background_gradient(subset=["composite"],cmap="RdYlGn"), use_container_width=True, height=420)
             pick_p = st.selectbox("Select pitcher", [""]+avail_p["Name"].tolist(), key="sel_p")
             cd, ce, cf = st.columns(3)
             if cd.button("✅ Add to MY team", key="btn_add_p") and pick_p:
@@ -1983,7 +1590,7 @@ elif page == "🏟️ Draft Room":
                 st.session_state.drafted_p.add(pick_p); st.rerun()
             if cf.button("🎯 Add to Targets", key="btn_target_p") and pick_p:
                 rr = pit_rec[pit_rec["Name"]==pick_p]
-                entry = {"name":pick_p,"type":"Pitcher","tag":rr.iloc[0].get("profile_tag","—") if not rr.empty else "—",
+                entry = {"name":pick_p,"type":"Pitcher","tag":"—",
                     "composite":float(rr.iloc[0].get("composite",0)) if not rr.empty else 0,"note":"Added from draft room"}
                 if not any(t["name"]==pick_p for t in st.session_state.targets):
                     st.session_state.targets.append(entry); st.success(f"🎯 {pick_p} added to targets!")
@@ -1994,16 +1601,16 @@ elif page == "🏟️ Draft Room":
             st.markdown("**Hitters**")
             for name in st.session_state.my_h:
                 row = bat_rec[bat_rec["Name"]==name]
-                risk = row.iloc[0]["regression_risk"] if not row.empty else "Low"
-                tag  = row.iloc[0]["profile_tag"] if not row.empty else ""
+                composite = row.iloc[0]["composite"] if not row.empty else 0
+                st.caption(f"Composite: {float(composite):.2f}")
                 dot  = {"High":"🔴","Medium":"🟡","Low":"🟢"}.get(risk,"⚪")
                 st.markdown(f"{dot} **{name}** {tag}")
         if st.session_state.my_p:
             st.markdown("**Pitchers**")
             for name in st.session_state.my_p:
                 row = pit_rec[pit_rec["Name"]==name]
-                risk = row.iloc[0]["regression_risk"] if not row.empty else "Low"
-                tag  = row.iloc[0]["profile_tag"] if not row.empty else ""
+                composite = row.iloc[0]["composite"] if not row.empty else 0
+                st.caption(f"Composite: {float(composite):.2f}")
                 dot  = {"High":"🔴","Medium":"🟡","Low":"🟢"}.get(risk,"⚪")
                 st.markdown(f"{dot} **{name}** {tag}")
         my_h_df = bat_rec[bat_rec["Name"].isin(st.session_state.my_h)]
@@ -2037,86 +1644,231 @@ elif page == "🏟️ Draft Room":
 
 elif page == "🎲 Monte Carlo Sim":
     st.title("🎲 Monte Carlo Season Simulator")
-    st.caption(
-        "Simulate thousands of full seasons for your roster. "
-        "See probability distributions across all 9 Yahoo categories, "
-        "estimate expected category wins vs. a league of opponents, "
-        "and stress-test alternative roster builds."
-    )
 
-    # All MC constants/functions are defined at module level above (mc_run_simulation, etc.)
     all_h_names_mc = sorted(bat_all["Name"].dropna().unique())
     all_p_names_mc = sorted(pit_all["Name"].dropna().unique())
 
-    # ── Setup controls (always visible above tabs) ─────────────
-    st.markdown("### ⚙️ Setup")
-    col_a, col_b = st.columns(2)
-    n_sim_val       = col_a.select_slider("Number of simulations",
-        options=[500, 1_000, 2_500, 5_000, 10_000], value=2_500)
-    league_size_mc  = col_b.slider("League size", 8, 16, 12, key="mc_league")
+    # ═══════════════════════════════════════════════════════════
+    #  DEPTH CHART — visual roster builder
+    # ═══════════════════════════════════════════════════════════
 
-    pre_h = list(st.session_state.get("my_h", []))
-    pre_p = list(st.session_state.get("my_p", []))
-    mc_hitters  = st.multiselect("My Hitters (up to 14)", options=all_h_names_mc,
-        default=[h for h in pre_h if h in all_h_names_mc], max_selections=14, key="mc_hitters")
-    mc_pitchers = st.multiselect("My Pitchers (up to 10)", options=all_p_names_mc,
-        default=[p for p in pre_p if p in all_p_names_mc], max_selections=10, key="mc_pitchers")
+    # Yahoo standard positions
+    LINEUP_POSITIONS = {
+        "C":  {"label":"C",  "x":0.50,"y":0.10,"max":1},
+        "1B": {"label":"1B", "x":0.72,"y":0.28,"max":1},
+        "2B": {"label":"2B", "x":0.60,"y":0.35,"max":1},
+        "3B": {"label":"3B", "x":0.28,"y":0.28,"max":1},
+        "SS": {"label":"SS", "x":0.40,"y":0.35,"max":1},
+        "LF": {"label":"LF", "x":0.18,"y":0.55,"max":1},
+        "CF": {"label":"CF", "x":0.50,"y":0.65,"max":1},
+        "RF": {"label":"RF", "x":0.82,"y":0.55,"max":1},
+        "CI": {"label":"CI", "x":0.72,"y":0.14,"max":1},
+        "MI": {"label":"MI", "x":0.28,"y":0.14,"max":1},
+        "Util":{"label":"Util","x":0.50,"y":0.20,"max":1},
+        "BN1":{"label":"BN", "x":0.15,"y":0.88,"max":1},
+        "BN2":{"label":"BN", "x":0.35,"y":0.88,"max":1},
+        "BN3":{"label":"BN", "x":0.55,"y":0.88,"max":1},
+        "BN4":{"label":"BN", "x":0.75,"y":0.88,"max":1},
+        "SP1":{"label":"SP", "x":0.10,"y":0.78,"max":1},
+        "SP2":{"label":"SP", "x":0.28,"y":0.78,"max":1},
+        "SP3":{"label":"SP", "x":0.46,"y":0.78,"max":1},
+        "SP4":{"label":"SP", "x":0.64,"y":0.78,"max":1},
+        "SP5":{"label":"SP", "x":0.82,"y":0.78,"max":1},
+        "RP1":{"label":"RP", "x":0.20,"y":0.68,"max":1},
+        "RP2":{"label":"RP", "x":0.38,"y":0.68,"max":1},
+        "RP3":{"label":"RP", "x":0.56,"y":0.68,"max":1},
+        "RP4":{"label":"RP", "x":0.74,"y":0.68,"max":1},
+        "RP5":{"label":"RP", "x":0.90,"y":0.68,"max":1},
+    }
+
+    # Init depth chart state
+    if "dc_roster" not in st.session_state:
+        st.session_state["dc_roster"] = {pos: "" for pos in LINEUP_POSITIONS}
+
+    st.markdown("### 🏟️ Depth Chart Roster")
+    st.caption("Assign players to positions below, then run the sim. SP/RP/BN slots are pitcher spots.")
+
+    st.markdown("""
+    <style>
+    .dc-field { background: radial-gradient(ellipse 80% 60% at 50% 50%, #2d5a1b 60%, #1a3a0d 100%);
+                border-radius:12px; padding:4px; position:relative; border:2px solid #3d7a2b; }
+    .dc-slot  { background:rgba(0,0,0,0.55); border:1.5px solid #4fc3f7; border-radius:8px;
+                padding:5px 8px; text-align:center; font-size:11px; cursor:pointer;
+                transition:all 0.2s; min-height:42px; }
+    .dc-slot:hover { border-color:#FFD700; background:rgba(79,195,247,0.18); }
+    .dc-slot-filled { border-color:#21C354 !important; background:rgba(33,195,84,0.12) !important; }
+    .dc-pos-label { color:#4fc3f7; font-weight:700; font-size:10px; letter-spacing:1px; }
+    .dc-player-name { color:#fff; font-size:11px; font-weight:600; margin-top:2px; white-space:nowrap;
+                      overflow:hidden; text-overflow:ellipsis; max-width:80px; }
+    .dc-infield-dirt { position:absolute; width:30%; height:30%; background:radial-gradient(#8B5E3C,#6B4226);
+                       border-radius:50%; top:35%; left:35%; opacity:0.35; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # Draw depth chart using a plotly figure as background + columns for slots
+    # Use columns grid layout for the actual selectors
+    dc = st.session_state["dc_roster"]
+
+    # ── Draw the baseball field SVG background + position slots using plotly ──
+    def build_field_figure(dc, pos_defs):
+        fig = go.Figure()
+        # Field background — green oval
+        theta = np.linspace(0, 2*np.pi, 200)
+        fig.add_shape(type="rect", x0=0, y0=0, x1=1, y1=1,
+            fillcolor="#1e4d0f", line_color="#2d6e1a", line_width=2)
+        # Infield dirt diamond
+        dia_x = [0.50, 0.72, 0.50, 0.28, 0.50]
+        dia_y = [0.12, 0.35, 0.58, 0.35, 0.12]
+        fig.add_trace(go.Scatter(x=dia_x, y=dia_y, fill="toself",
+            fillcolor="#7a5230", line=dict(color="#5c3d20", width=2),
+            mode="lines", showlegend=False, hoverinfo="skip"))
+        # Outfield arc
+        arc_theta = np.linspace(np.pi*0.05, np.pi*0.95, 100)
+        arc_x = 0.50 + 0.46 * np.cos(arc_theta)
+        arc_y = 0.35 + 0.50 * np.sin(arc_theta)
+        fig.add_trace(go.Scatter(x=arc_x, y=arc_y, mode="lines",
+            line=dict(color="#4a9e2f", width=3), showlegend=False, hoverinfo="skip"))
+        # Pitcher's mound
+        fig.add_shape(type="circle", x0=0.44, y0=0.295, x1=0.56, y1=0.365,
+            fillcolor="#9e7a50", line_color="#7a5c3a", line_width=1.5)
+        # Home plate
+        fig.add_shape(type="rect", x0=0.47, y0=0.09, x1=0.53, y1=0.13,
+            fillcolor="white", line_color="#ccc", line_width=1)
+        # Position slots
+        for pos_key, pd_ in pos_defs.items():
+            player = dc.get(pos_key, "")
+            is_filled = bool(player)
+            color     = "#21C354" if is_filled else "#4fc3f7"
+            bg        = "rgba(33,195,84,0.20)" if is_filled else "rgba(0,0,0,0.55)"
+            label_txt = pd_["label"]
+            player_short = player[:10] + "…" if len(player) > 10 else player
+            display   = f"<b>{label_txt}</b><br><span style='font-size:9px'>{player_short if player_short else '—'}</span>"
+            fig.add_annotation(
+                x=pd_["x"], y=pd_["y"],
+                text=display,
+                showarrow=False,
+                font=dict(size=10, color=color),
+                bgcolor=bg,
+                bordercolor=color,
+                borderwidth=1.5,
+                borderpad=4,
+                align="center",
+            )
+        fig.update_layout(
+            xaxis=dict(range=[0,1], visible=False, fixedrange=True),
+            yaxis=dict(range=[0,1], visible=False, fixedrange=True, scaleanchor="x"),
+            margin=dict(l=0,r=0,t=0,b=0),
+            height=500,
+            paper_bgcolor="#0e1117",
+            plot_bgcolor="#1e4d0f",
+            showlegend=False,
+            hovermode=False,
+        )
+        return fig
+
+    col_field, col_sliders = st.columns([3, 2])
+
+    with col_field:
+        fig_field = build_field_figure(dc, LINEUP_POSITIONS)
+        st.plotly_chart(fig_field, use_container_width=True, config={"displayModeBar": False})
+
+    with col_sliders:
+        st.markdown("**🔴 Batting Order / Position Players**")
+        hit_positions = ["C","1B","2B","3B","SS","LF","CF","RF","CI","MI","Util","BN1","BN2","BN3","BN4"]
+        pit_positions = ["SP1","SP2","SP3","SP4","SP5","RP1","RP2","RP3","RP4","RP5"]
+
+        with st.expander("⚾ Hitter Slots", expanded=True):
+            for pos in hit_positions:
+                cur = dc.get(pos, "")
+                options = [""] + [n for n in all_h_names_mc if n not in dc.values() or n == cur]
+                sel = st.selectbox(
+                    f"{LINEUP_POSITIONS[pos]['label']} slot",
+                    options=options,
+                    index=options.index(cur) if cur in options else 0,
+                    key=f"dc_{pos}",
+                    label_visibility="collapsed",
+                    placeholder=f"{LINEUP_POSITIONS[pos]['label']} — select player",
+                )
+                st.session_state["dc_roster"][pos] = sel
+
+        with st.expander("⚾ Pitcher Slots", expanded=True):
+            for pos in pit_positions:
+                cur = dc.get(pos, "")
+                options = [""] + [n for n in all_p_names_mc if n not in [dc.get(p,"") for p in pit_positions] or n == cur]
+                sel = st.selectbox(
+                    f"{LINEUP_POSITIONS[pos]['label']} slot",
+                    options=options,
+                    index=options.index(cur) if cur in options else 0,
+                    key=f"dc_{pos}",
+                    label_visibility="collapsed",
+                    placeholder=f"{LINEUP_POSITIONS[pos]['label']} — select player",
+                )
+                st.session_state["dc_roster"][pos] = sel
+
+    # Derive hitter/pitcher lists from depth chart
+    dc_hitters = list({v for k,v in dc.items() if k in hit_positions and v})
+    dc_pitchers = list({v for k,v in dc.items() if k in pit_positions and v})
+
+    # Sync to my_h / my_p session state so other pages see them
+    if dc_hitters: st.session_state["my_h"] = dc_hitters
+    if dc_pitchers: st.session_state["my_p"] = dc_pitchers
+
+    # ── Settings row ────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### ⚙️ Simulation Settings")
+    col_a, col_b = st.columns(2)
+    n_sim_val      = col_a.select_slider("Number of simulations",
+        options=[500,1_000,2_500,5_000,10_000], value=2_500)
+    league_size_mc = col_b.slider("League size", 8, 16, 12, key="mc_league")
 
     adv1, adv2, adv3, adv4 = st.columns(4)
-    injury_pct_val   = adv1.slider("Injury risk per player (%)", 0, 40, 15,
-        help="Probability (%) that each player suffers an IL stint this season. When injured, they miss 15–50% of games. 0% = no injuries modeled. 15% = realistic baseline. 40% = high-injury pessimistic scenario.")
-    regr_pull_val    = adv2.slider("Mean-reversion strength", 0.0, 1.0, 0.3, 0.05,
-        help="0 = use raw historical mean. 1 = fully pull toward league average.")
-    saber_weight_val = adv3.slider("Sabermetric weight", 0.0, 1.0, 0.5, 0.05,
-        help="How much sabermetric indicators adjust the projected means.\n\n"
-             "0 = pure counting-stat history only.\n"
-             "0.5 = balanced blend (recommended).\n"
-             "1.0 = fully sabermetric-driven.\n\n"
-             "Hitters: Barrel% → HR, wRC+ → R, wOBA → RBI, Spd → SB, xwOBA/xBA → AVG\n"
-             "Pitchers: xFIP/SIERA → ERA, K-BB%/GB% → WHIP, SwStr% → SO, K%/GB% → W")
-    platoon_val      = adv4.checkbox("Legacy Barrel%/SwStr% boost", value=False,
-        help="Old 3-bucket quality multiplier. Only applies when Sabermetric weight = 0. "
-             "When saber weight > 0, the continuous sabermetric adjustments replace this.")
+    injury_pct_val   = adv1.slider("Injury risk (%)", 0, 40, 15, key="mc_inj",
+        help="% chance each player suffers an IL stint; when injured misses 15–50% of season.")
+    regr_pull_val    = adv2.slider("Mean reversion", 0.0, 1.0, 0.3, 0.05, key="mc_regr",
+        help="0 = raw historical mean. 1 = fully regress to league average.")
+    saber_weight_val = adv3.slider("Sabermetric weight", 0.0, 1.0, 0.5, 0.05, key="mc_saber",
+        help="How much xwOBA/Barrel%/xFIP etc. adjust projected means.")
+    platoon_val      = adv4.checkbox("Legacy quality boost", value=False, key="mc_platoon")
 
     run_clicked = st.button(
         "▶️ Run Monte Carlo Simulation", type="primary",
-        disabled=(len(mc_hitters) == 0 and len(mc_pitchers) == 0),
+        disabled=(len(dc_hitters) == 0 and len(dc_pitchers) == 0),
+        key="mc_run_btn",
     )
 
-    # Increment run_count on each click so cache key is always unique
     if run_clicked:
         st.session_state["mc_run_count"] = st.session_state.get("mc_run_count", 0) + 1
         st.session_state["mc_params"] = {
-            "n_sim": n_sim_val,
-            "league_size": league_size_mc,
-            "hitters": tuple(mc_hitters),
-            "pitchers": tuple(mc_pitchers),
-            "injury_pct": injury_pct_val / 100,
-            "regression_pull": regr_pull_val,
-            "saber_weight": saber_weight_val,
-            "platoon_boost": platoon_val,
-            "run_count": st.session_state["mc_run_count"],
+            "n_sim":          n_sim_val,
+            "league_size":    league_size_mc,
+            "hitters":        tuple(dc_hitters),
+            "pitchers":       tuple(dc_pitchers),
+            "injury_pct":     injury_pct_val / 100,
+            "regression_pull":regr_pull_val,
+            "saber_weight":   saber_weight_val,
+            "platoon_boost":  platoon_val,
+            "run_count":      st.session_state["mc_run_count"],
         }
 
     st.markdown("---")
 
-    # ── Results tabs (always rendered; content conditional on params) ──
-    tab_results, tab_cat, tab_alt, tab_opp = st.tabs([
+    # ── Results tabs ────────────────────────────────────────────
+    tab_results, tab_cat, tab_alt, tab_opp, tab_season = st.tabs([
         "📈 Season Projections",
         "🏆 Category Win Odds",
         "🔀 Roster Alternatives",
-        "👥 vs. Opponent Sims",
+        "👥 vs. Opponent",
+        "📅 Season Sim",
     ])
 
     mc_p = st.session_state.get("mc_params")
 
     if mc_p is None:
-        for t in [tab_results, tab_cat, tab_alt, tab_opp]:
+        for t in [tab_results, tab_cat, tab_alt, tab_opp, tab_season]:
             with t:
-                st.info("👆 Select your roster above and click **▶️ Run Monte Carlo Simulation** to begin.")
+                st.info("👆 Build your roster on the depth chart above and click **▶️ Run Monte Carlo Simulation** to begin.")
     else:
-        # Run (cached) simulation
-        with st.spinner("🎲 Running simulations — this may take a few seconds..."):
+        with st.spinner("🎲 Running simulations..."):
             team_sims, player_sims = mc_run_simulation(
                 hitters        = mc_p["hitters"],
                 pitchers       = mc_p["pitchers"],
@@ -2155,7 +1907,7 @@ elif page == "🎲 Monte Carlo Sim":
                     .background_gradient(subset=["Std Dev"], cmap="YlOrRd")
                     .format({"CV%": "{:.1f}%"}),
                 use_container_width=True, hide_index=True)
-            st.caption("**CV%** = volatility. High CV% = this category is especially unpredictable for your roster.")
+            st.caption("**CV%** = volatility. High CV% = unpredictable category for your roster.")
 
             st.markdown("---")
             st.markdown("#### 📊 Category Distribution Plots")
@@ -2186,9 +1938,8 @@ elif page == "🎲 Monte Carlo Sim":
                 player_rows.append(row)
             if player_rows:
                 pproj = pd.DataFrame(player_rows)
-                spc = ["Name", "Type"] + [c for c in MC_H_CATS + MC_P_CATS + ["wRC+","xwOBA","Barrel%","K%","xFIP"] if c in pproj.columns]
-                st.dataframe(pproj[spc].sort_values(["Type", "Name"]), use_container_width=True, hide_index=True)
-
+                spc = ["Name","Type"] + [c for c in MC_H_CATS + MC_P_CATS + ["wRC+","xwOBA","Barrel%","K%","xFIP"] if c in pproj.columns]
+                st.dataframe(pproj[spc].sort_values(["Type","Name"]), use_container_width=True, hide_index=True)
 
         # ── Tab 2: Category Win Odds ───────────────────────────
         with tab_cat:
@@ -2211,7 +1962,7 @@ elif page == "🎲 Monte Carlo Sim":
                 med_me  = float(np.median(my_v))
                 med_opp = float(np.median(np.concatenate(opp_pool[cat])))
                 strength = ("💪 Dominant" if awp >= 0.65 else "✅ Solid" if awp >= 0.52 else
-                            "⚖️ Toss-up" if awp >= 0.46 else "⚠️ Weak"  if awp >= 0.35 else "🚨 Punt")
+                            "⚖️ Toss-up" if awp >= 0.46 else "⚠️ Weak" if awp >= 0.35 else "🚨 Punt")
                 win_pct_rows.append({
                     "Category": cat, "Win%": round(awp * 100, 1),
                     "My Median": round(med_me, 2), "Opp Median": round(med_opp, 2),
@@ -2240,15 +1991,14 @@ elif page == "🎲 Monte Carlo Sim":
                 fill="toself", line_color="#4fc3f7",
                 fillcolor="rgba(79,195,247,0.15)", name="Win%"))
             fig_radar.add_trace(go.Scatterpolar(
-                r=[50] * (len(cats_r) + 1), theta=cats_r + [cats_r[0]],
+                r=[50]*(len(cats_r)+1), theta=cats_r + [cats_r[0]],
                 mode="lines", line=dict(dash="dash", color="gray", width=1), name="50% line"))
             fig_radar.update_layout(
-                polar=dict(radialaxis=dict(range=[0, 100], ticksuffix="%", tickfont_size=9)),
+                polar=dict(radialaxis=dict(range=[0,100], ticksuffix="%", tickfont_size=9)),
                 template="plotly_dark", height=420,
                 legend=dict(orientation="h", y=-0.1), margin=dict(l=40,r=40,t=40,b=60))
             st.plotly_chart(fig_radar, use_container_width=True)
-
-            exp_wins = sum(r["Win%"] / 100 for _, r in win_df.iterrows())
+            exp_wins = sum(r["Win%"]/100 for _,r in win_df.iterrows())
             st.metric("📊 Expected Category Wins per matchup", f"{exp_wins:.2f} / 9",
                 f"{'above' if exp_wins > 4.5 else 'below'} .500")
 
@@ -2258,13 +2008,13 @@ elif page == "🎲 Monte Carlo Sim":
             st.caption("Swap one player and see how category distributions shift.")
             all_current = list(mc_p["hitters"]) + list(mc_p["pitchers"])
             if not all_current:
-                st.info("Add players in the Setup section above first.")
+                st.info("Add players in the depth chart above first.")
             else:
-                swap_out   = st.selectbox("Player to replace", all_current, key="swap_out")
-                is_h_swap  = swap_out in mc_p["hitters"]
-                taken      = set(mc_p["hitters"] if is_h_swap else mc_p["pitchers"])
-                pool       = [n for n in (all_h_names_mc if is_h_swap else all_p_names_mc) if n not in taken]
-                swap_in    = st.selectbox("Replace with", pool, key="swap_in")
+                swap_out  = st.selectbox("Player to replace", all_current, key="swap_out")
+                is_h_swap = swap_out in mc_p["hitters"]
+                taken     = set(mc_p["hitters"] if is_h_swap else mc_p["pitchers"])
+                pool_opts = [n for n in (all_h_names_mc if is_h_swap else all_p_names_mc) if n not in taken]
+                swap_in   = st.selectbox("Replace with", pool_opts, key="swap_in")
 
                 if st.button("🔄 Compare Rosters", key="btn_compare"):
                     if is_h_swap:
@@ -2273,14 +2023,12 @@ elif page == "🎲 Monte Carlo Sim":
                     else:
                         alt_h = mc_p["hitters"]
                         alt_p = tuple(pp if pp != swap_out else swap_in for pp in mc_p["pitchers"])
-
                     with st.spinner("Running alternative simulation..."):
                         alt_sims, _ = mc_run_simulation(
                             alt_h, alt_p, mc_p["n_sim"],
                             mc_p["injury_pct"], mc_p["regression_pull"],
                             mc_p["platoon_boost"], mc_p.get("saber_weight", 0.5),
                             run_count=mc_p.get("run_count", 0) + 77)
-
                     st.markdown(f"#### Comparing: **{swap_out}** → **{swap_in}**")
                     comp_rows = []
                     for cat in MC_ALL_CATS:
@@ -2291,36 +2039,31 @@ elif page == "🎲 Monte Carlo Sim":
                         if cat in MC_LOWER_BETTER:
                             direction = "✅ Better" if delta < -0.01 else "❌ Worse" if delta > 0.01 else "➡️ Similar"
                         else:
-                            direction = "✅ Better" if delta >  0.01 else "❌ Worse" if delta < -0.01 else "➡️ Similar"
+                            direction = "✅ Better" if delta > 0.01 else "❌ Worse" if delta < -0.01 else "➡️ Similar"
                         comp_rows.append({
                             "Category": cat,
                             f"Base ({swap_out})": round(bm, 2),
-                            f"Alt ({swap_in})":   round(am, 2),
-                            "Delta": round(delta, 2),
-                            "Impact": direction,
+                            f"Alt ({swap_in})": round(am, 2),
+                            "Delta": round(delta, 2), "Impact": direction,
                         })
                     comp_df = pd.DataFrame(comp_rows)
                     def _ci(val):
                         if "Better" in str(val): return "color:#21C354; font-weight:bold"
                         if "Worse"  in str(val): return "color:#FF4B4B; font-weight:bold"
                         return "color:#aaa"
-                    st.dataframe(comp_df.style.map(_ci, subset=["Impact"]),
-                        use_container_width=True, hide_index=True)
-
-                    imp_cat = comp_df.reindex(
-                        comp_df["Delta"].abs().sort_values(ascending=False).index
-                    ).iloc[0]["Category"]
+                    st.dataframe(comp_df.style.map(_ci, subset=["Impact"]), use_container_width=True, hide_index=True)
+                    imp_cat = comp_df.reindex(comp_df["Delta"].abs().sort_values(ascending=False).index).iloc[0]["Category"]
                     st.markdown(f"#### Distribution shift — most impacted: **{imp_cat}**")
                     fig_ov = go.Figure()
                     fig_ov.add_trace(go.Histogram(x=team_sims[imp_cat], nbinsx=40,
                         name=f"Base ({swap_out})", opacity=0.65, marker_color="#4fc3f7"))
-                    fig_ov.add_trace(go.Histogram(x=alt_sims[imp_cat],  nbinsx=40,
-                        name=f"Alt ({swap_in})",  opacity=0.65, marker_color="#FF7043"))
+                    fig_ov.add_trace(go.Histogram(x=alt_sims[imp_cat], nbinsx=40,
+                        name=f"Alt ({swap_in})", opacity=0.65, marker_color="#FF7043"))
                     fig_ov.update_layout(barmode="overlay", template="plotly_dark", height=320,
                         legend=dict(orientation="h", y=1.1), xaxis_title=imp_cat)
                     st.plotly_chart(fig_ov, use_container_width=True)
 
-        # ── Tab 4: vs. Opponent Sims ───────────────────────────
+        # ── Tab 4: vs. Opponent ────────────────────────────────
         with tab_opp:
             st.markdown("### 👥 Head-to-Head Matchup Simulator")
             st.caption("Build a specific opponent's roster and simulate the matchup.")
@@ -2328,7 +2071,6 @@ elif page == "🎲 Monte Carlo Sim":
             opp_p_opts = [n for n in all_p_names_mc if n not in mc_p["pitchers"]]
             opp_hitters  = st.multiselect("Opponent's Hitters",  options=opp_h_opts, max_selections=14, key="opp_hitters")
             opp_pitchers = st.multiselect("Opponent's Pitchers", options=opp_p_opts, max_selections=10, key="opp_pitchers")
-
             if st.button("⚔️ Simulate Matchup", key="btn_matchup"):
                 if not opp_hitters and not opp_pitchers:
                     st.warning("Add at least one opponent player.")
@@ -2339,7 +2081,6 @@ elif page == "🎲 Monte Carlo Sim":
                             mc_p["injury_pct"], mc_p["regression_pull"],
                             mc_p["platoon_boost"], mc_p.get("saber_weight", 0.5),
                             run_count=mc_p.get("run_count", 0) + 55)
-
                     h2h_rows = []; my_score = 0; opp_score = 0
                     for cat in MC_ALL_CATS:
                         if cat not in team_sims.columns or cat not in opp_sims.columns: continue
@@ -2348,20 +2089,18 @@ elif page == "🎲 Monte Carlo Sim":
                         opp_v = opp_sims[cat].values[:n]
                         wp = float(np.mean(my_v < opp_v) if cat in MC_LOWER_BETTER else np.mean(my_v > opp_v)) * 100
                         exp = "Win" if wp >= 55 else "Loss" if wp <= 45 else "Toss-up"
-                        if exp == "Win":  my_score  += 1
+                        if exp == "Win": my_score += 1
                         elif exp == "Loss": opp_score += 1
                         h2h_rows.append({
                             "Category": cat,
-                            "My Median":  round(float(np.median(my_v)),  2),
+                            "My Median":  round(float(np.median(my_v)), 2),
                             "Opp Median": round(float(np.median(opp_v)), 2),
-                            "Win Prob": round(wp, 1),
-                            "Expected": exp,
+                            "Win Prob": round(wp, 1), "Expected": exp,
                         })
-
                     h2h_df = pd.DataFrame(h2h_rows)
                     def _ch2h(val):
-                        if val == "Win":     return "color:#21C354; font-weight:bold"
-                        if val == "Loss":    return "color:#FF4B4B; font-weight:bold"
+                        if val == "Win":  return "color:#21C354; font-weight:bold"
+                        if val == "Loss": return "color:#FF4B4B; font-weight:bold"
                         return "color:#FFA500"
                     def _cwp(val):
                         try:
@@ -2371,36 +2110,290 @@ elif page == "🎲 Monte Carlo Sim":
                         except: pass
                         return ""
                     st.dataframe(
-                        h2h_df.style
-                            .map(_ch2h, subset=["Expected"])
-                            .map(_cwp,  subset=["Win Prob"])
+                        h2h_df.style.map(_ch2h, subset=["Expected"]).map(_cwp, subset=["Win Prob"])
                             .format({"Win Prob": "{:.1f}%"}),
                         use_container_width=True, hide_index=True)
-
                     ties = 9 - my_score - opp_score
                     mc1, mc2, mc3 = st.columns(3)
-                    mc1.metric("My Expected Cats",  my_score)
-                    mc2.metric("Toss-ups",           ties)
-                    mc3.metric("Opp Expected Cats",  opp_score)
-
-                    result_label = ("🏆 Projected WIN"   if my_score > opp_score else
-                                    "⚔️ Projected SPLIT" if my_score == opp_score else
-                                    "💀 Projected LOSS")
+                    mc1.metric("My Expected Cats", my_score)
+                    mc2.metric("Toss-ups", ties)
+                    mc3.metric("Opp Expected Cats", opp_score)
+                    result_label = ("🏆 Projected WIN" if my_score > opp_score else
+                                    "⚔️ Projected SPLIT" if my_score == opp_score else "💀 Projected LOSS")
                     result_color = ("#21C354" if my_score > opp_score else
                                     "#FFA500" if my_score == opp_score else "#FF4B4B")
                     st.markdown(f"<h2 style='color:{result_color};text-align:center'>{result_label}</h2>",
                         unsafe_allow_html=True)
-
                     fig_h2h = go.Figure()
                     fig_h2h.add_trace(go.Bar(
                         x=h2h_df["Category"], y=h2h_df["Win Prob"],
                         marker_color=["#21C354" if v >= 55 else "#FF4B4B" if v <= 45 else "#FFA500"
                                       for v in h2h_df["Win Prob"]],
-                        text=[f"{v:.0f}%" for v in h2h_df["Win Prob"]],
-                        textposition="outside"))
-                    fig_h2h.add_hline(y=50, line_dash="dash", line_color="white",
-                        opacity=0.5, annotation_text="50% line")
+                        text=[f"{v:.0f}%" for v in h2h_df["Win Prob"]], textposition="outside"))
+                    fig_h2h.add_hline(y=50, line_dash="dash", line_color="white", opacity=0.5)
                     fig_h2h.update_layout(template="plotly_dark", height=380,
-                        yaxis=dict(range=[0, 110], title="Win Probability (%)"),
+                        yaxis=dict(range=[0,110], title="Win Probability (%)"),
                         xaxis_title="Category", showlegend=False, margin=dict(t=20))
                     st.plotly_chart(fig_h2h, use_container_width=True)
+
+        # ── Tab 5: Season Sim ──────────────────────────────────
+        with tab_season:
+            st.markdown("### 📅 20-Week Yahoo Fantasy Season Simulator")
+            st.caption(
+                "Simulates a full 20-week head-to-head 9-category Yahoo fantasy season. "
+                "Each week your team's 9-cat stats are drawn from the Monte Carlo distributions "
+                "and compared against a randomly generated opponent. Tracks standings, streaks, "
+                "and category-level performance week by week."
+            )
+
+            ss_col1, ss_col2, ss_col3 = st.columns(3)
+            ss_n_seasons  = ss_col1.slider("Seasons to simulate", 100, 2000, 500, 100,
+                key="ss_n_seasons", help="More seasons = more stable standings estimates")
+            ss_league_sz  = ss_col2.slider("League size", 8, 16, 12, key="ss_league_sz")
+            ss_playoff_wk = ss_col3.slider("Playoffs start week", 14, 18, 16, key="ss_playoff_wk",
+                help="Regular season ends; top N teams make playoffs")
+            ss_playoff_spots = st.slider("Playoff spots", 2, 8, 4, key="ss_playoff_spots")
+
+            run_season_sim = st.button("🏆 Run Season Simulation", type="primary", key="btn_season_sim")
+
+            if run_season_sim:
+                np.random.seed(mc_p.get("run_count", 0) + 42)
+                N_WEEKS   = 20
+                REG_WEEKS = ss_playoff_wk - 1
+                N_SIM     = ss_n_seasons
+                CATS      = MC_ALL_CATS
+                cats_avail_ss = [c for c in CATS if c in team_sims.columns]
+
+                # ── Build weekly distributions from season sims ──
+                # Divide season totals by ~26 (weeks a player accumulates over 162 game sched)
+                # Rate stats stay as-is (they're per-PA averages, not cumulative)
+                RATE_SS = {"AVG", "ERA", "WHIP"}
+                COUNT_SCALE = 26  # approx. scoring weeks in a season
+
+                def _weekly_draws(sims_df, n_weeks, n_sim_ss):
+                    """Convert season-total sims to week-level distributions."""
+                    weekly = {}
+                    for cat in cats_avail_ss:
+                        season_vals = sims_df[cat].values
+                        mu = float(np.median(season_vals))
+                        sd = float(np.std(season_vals))
+                        if cat in RATE_SS:
+                            # Rate stats: weekly noise around season mean
+                            wk_mu = mu; wk_sd = sd * 1.4  # more week-to-week variance
+                        else:
+                            # Counting: divide by weeks, add variance
+                            wk_mu = mu / COUNT_SCALE
+                            wk_sd = (sd / COUNT_SCALE) * 1.5
+                        # Truncate to valid ranges
+                        lo = 0.0 if cat not in RATE_SS else (0.5 if cat == "ERA" else 0.6 if cat == "WHIP" else 0.150)
+                        hi = wk_mu * 4 + wk_sd * 3  # generous ceiling
+                        a_tn = (lo - wk_mu) / max(wk_sd, 1e-6)
+                        b_tn = (hi - wk_mu) / max(wk_sd, 1e-6)
+                        weekly[cat] = scipy_stats.truncnorm.rvs(
+                            a_tn, b_tn, loc=wk_mu, scale=max(wk_sd, 1e-6),
+                            size=(n_sim_ss, n_weeks))
+                    return weekly  # {cat: array(n_sim, n_weeks)}
+
+                # Opponent pool: generate n_league-1 opponents weekly
+                def _opp_weekly(n_opp, n_weeks, n_sim_ss):
+                    """Random opponent weekly stats — league-average profile with noise."""
+                    opp_weekly = {}
+                    for cat in cats_avail_ss:
+                        if cat in team_sims.columns:
+                            lg_mu = float(np.median(team_sims[cat])) * 0.92  # opps slightly worse on average
+                            lg_sd = float(np.std(team_sims[cat]))
+                        else:
+                            lg_mu, lg_sd = 0.0, 1.0
+                        if cat not in RATE_SS:
+                            lg_mu /= COUNT_SCALE; lg_sd = lg_sd / COUNT_SCALE * 1.5
+                        else:
+                            lg_sd *= 1.4
+                        lo = 0.0 if cat not in RATE_SS else 0.5
+                        hi = lg_mu * 4 + lg_sd * 3
+                        a_t = (lo - lg_mu) / max(lg_sd, 1e-6)
+                        b_t = (hi - lg_mu) / max(lg_sd, 1e-6)
+                        opp_weekly[cat] = scipy_stats.truncnorm.rvs(
+                            a_t, b_t, loc=lg_mu, scale=max(lg_sd, 1e-6),
+                            size=(n_sim_ss, n_opp, n_weeks))
+                    return opp_weekly
+
+                with st.spinner(f"📅 Simulating {N_SIM:,} full seasons × {N_WEEKS} weeks..."):
+                    my_weekly  = _weekly_draws(team_sims, N_WEEKS, N_SIM)
+                    opp_weekly = _opp_weekly(ss_league_sz - 1, N_WEEKS, N_SIM)
+
+                    # ── Simulate each week of each season ──
+                    # Results: (n_sim, n_weeks) arrays of W/L/T and cat wins
+                    all_wins   = np.zeros((N_SIM, N_WEEKS), dtype=int)  # matchup wins
+                    all_losses = np.zeros((N_SIM, N_WEEKS), dtype=int)
+                    all_ties   = np.zeros((N_SIM, N_WEEKS), dtype=int)
+                    cat_wins_matrix = np.zeros((N_SIM, N_WEEKS, len(cats_avail_ss)))
+
+                    for wi in range(N_WEEKS):
+                        # Pick a random opponent for this week (one of n_opp)
+                        opp_idx = np.random.randint(0, ss_league_sz - 1, size=N_SIM)
+                        wk_cat_wins = np.zeros(N_SIM)
+                        for ci, cat in enumerate(cats_avail_ss):
+                            my_val  = my_weekly[cat][:, wi]           # (N_SIM,)
+                            opp_val = opp_weekly[cat][np.arange(N_SIM), opp_idx, wi]
+                            if cat in MC_LOWER_BETTER:
+                                cat_win = (my_val < opp_val).astype(float)
+                            else:
+                                cat_win = (my_val > opp_val).astype(float)
+                            cat_wins_matrix[:, wi, ci] = cat_win
+                            wk_cat_wins += cat_win
+
+                        n_cats = len(cats_avail_ss)
+                        matchup_win  = (wk_cat_wins > n_cats / 2).astype(int)
+                        matchup_loss = (wk_cat_wins < n_cats / 2).astype(int)
+                        matchup_tie  = ((wk_cat_wins == n_cats / 2)).astype(int)
+                        all_wins[:,wi]   = matchup_win
+                        all_losses[:,wi] = matchup_loss
+                        all_ties[:,wi]   = matchup_tie
+
+                    # ── Season-level aggregates ──
+                    reg_wins   = all_wins[:, :REG_WEEKS].sum(axis=1)    # (N_SIM,)
+                    reg_losses = all_losses[:, :REG_WEEKS].sum(axis=1)
+                    reg_ties   = all_ties[:, :REG_WEEKS].sum(axis=1)
+                    playoff_rate = (reg_wins >= np.percentile(reg_wins, (1 - ss_playoff_spots/ss_league_sz)*100)).mean()
+
+                    # Per-cat win rates
+                    cat_win_rates = cat_wins_matrix[:, :REG_WEEKS, :].mean(axis=(0,1))  # per cat
+
+                # ── Display results ──
+                st.markdown("---")
+                st.markdown("#### 📊 Regular Season Record Distribution")
+                rw_p10, rw_med, rw_p90 = int(np.percentile(reg_wins,10)), int(np.median(reg_wins)), int(np.percentile(reg_wins,90))
+                rl_p10, rl_med, rl_p90 = int(np.percentile(reg_losses,10)), int(np.median(reg_losses)), int(np.percentile(reg_losses,90))
+
+                sm1, sm2, sm3, sm4, sm5 = st.columns(5)
+                sm1.metric("Median Wins",    rw_med)
+                sm2.metric("Median Losses",  rl_med)
+                sm3.metric("Win Range (P10–P90)", f"{rw_p10}–{rw_p90}")
+                sm4.metric("Win %",          f"{(reg_wins/(REG_WEEKS)).mean()*100:.1f}%")
+                sm5.metric("Playoff Rate",   f"{playoff_rate*100:.1f}%",
+                    help=f"% of simulated seasons where you finish in top {ss_playoff_spots} of {ss_league_sz}")
+
+                # Win distribution histogram
+                fig_wins = go.Figure()
+                fig_wins.add_trace(go.Histogram(
+                    x=reg_wins, nbinsx=REG_WEEKS,
+                    marker_color="#4fc3f7", showlegend=False,
+                    hovertemplate="Wins: %{x}<br>Count: %{y}<extra></extra>"))
+                fig_wins.add_vline(x=rw_med, line_dash="dash", line_color="yellow",
+                    annotation_text=f"Median: {rw_med}W", annotation_position="top right")
+                fig_wins.add_vrect(x0=rw_p10, x1=rw_p90,
+                    fillcolor="rgba(79,195,247,0.08)", line_width=0,
+                    annotation_text="P10–P90", annotation_position="top left")
+                # Playoff threshold line
+                thresh_w = np.percentile(reg_wins, (1 - ss_playoff_spots/ss_league_sz)*100)
+                fig_wins.add_vline(x=thresh_w, line_dash="dot", line_color="#21C354",
+                    annotation_text=f"~Playoff cutoff ({int(thresh_w)}W)", annotation_position="top left",
+                    annotation_font_color="#21C354")
+                fig_wins.update_layout(
+                    title=f"Wins distribution over {REG_WEEKS}-week regular season",
+                    template="plotly_dark", height=300,
+                    xaxis_title="Regular Season Wins", yaxis_title="# Simulated Seasons",
+                    margin=dict(l=40,r=20,t=50,b=40))
+                st.plotly_chart(fig_wins, use_container_width=True)
+
+                st.markdown("---")
+                st.markdown("#### 🏅 Category Win Rates (Regular Season)")
+                cat_wr_df = pd.DataFrame({
+                    "Category": cats_avail_ss,
+                    "Win Rate": [round(r*100, 1) for r in cat_win_rates],
+                    "Assessment": [
+                        "💪 Dominant" if r >= 0.65 else "✅ Solid" if r >= 0.52 else
+                        "⚖️ Toss-up" if r >= 0.46 else "⚠️ Weak" if r >= 0.35 else "🚨 Punt"
+                        for r in cat_win_rates
+                    ]
+                }).sort_values("Win Rate", ascending=False)
+                def _cwr(val):
+                    try:
+                        v = float(val)
+                        if v >= 65: return "color:#21C354; font-weight:bold"
+                        if v >= 52: return "color:#21C354"
+                        if v >= 46: return "color:#FFA500"
+                        if v >= 35: return "color:#FF4B4B"
+                        return "color:#FF4B4B; font-weight:bold"
+                    except: return ""
+                st.dataframe(
+                    cat_wr_df.style.map(_cwr, subset=["Win Rate"]).format({"Win Rate": "{:.1f}%"}),
+                    use_container_width=True, hide_index=True)
+
+                # Category win rate bar chart
+                fig_catbar = go.Figure(go.Bar(
+                    x=cat_wr_df["Category"],
+                    y=cat_wr_df["Win Rate"],
+                    marker_color=["#21C354" if v >= 52 else "#FF4B4B" if v < 46 else "#FFA500"
+                                  for v in cat_wr_df["Win Rate"]],
+                    text=[f"{v:.1f}%" for v in cat_wr_df["Win Rate"]],
+                    textposition="outside"))
+                fig_catbar.add_hline(y=50, line_dash="dash", line_color="gray", opacity=0.6,
+                    annotation_text="50% baseline")
+                fig_catbar.update_layout(
+                    template="plotly_dark", height=320,
+                    yaxis=dict(range=[0,100], title="Win Rate %"),
+                    xaxis_title="Category", showlegend=False, margin=dict(t=20,b=40))
+                st.plotly_chart(fig_catbar, use_container_width=True)
+
+                st.markdown("---")
+                st.markdown("#### 📆 Week-by-Week Win Probability")
+                weekly_win_rates = all_wins.mean(axis=0)  # (N_WEEKS,)
+                fig_wk = go.Figure()
+                fig_wk.add_trace(go.Scatter(
+                    x=list(range(1, N_WEEKS+1)), y=weekly_win_rates*100,
+                    mode="lines+markers",
+                    line=dict(color="#4fc3f7", width=2),
+                    marker=dict(size=7, color=[
+                        "#21C354" if v >= 0.55 else "#FF4B4B" if v <= 0.45 else "#FFA500"
+                        for v in weekly_win_rates
+                    ]),
+                    name="Win probability",
+                    hovertemplate="Week %{x}<br>Win prob: %{y:.1f}%<extra></extra>"
+                ))
+                fig_wk.add_hline(y=50, line_dash="dash", line_color="gray", opacity=0.5,
+                    annotation_text="50%")
+                if ss_playoff_wk <= N_WEEKS:
+                    fig_wk.add_vline(x=ss_playoff_wk, line_dash="dot", line_color="#FFD700",
+                        annotation_text="Playoffs", annotation_font_color="#FFD700")
+                fig_wk.update_layout(
+                    title="Matchup win probability by week (% of simulated seasons you win that week)",
+                    template="plotly_dark", height=340,
+                    xaxis=dict(title="Week", dtick=1),
+                    yaxis=dict(range=[0,100], title="Win Probability %"),
+                    margin=dict(l=40,r=20,t=50,b=40))
+                st.plotly_chart(fig_wk, use_container_width=True)
+
+                st.markdown("---")
+                st.markdown("#### 🧮 Standings Projection")
+                st.caption(f"Simulated final regular season records across {N_SIM:,} seasons")
+                record_counts = {}
+                for w, l in zip(reg_wins, reg_losses):
+                    key = f"{int(w)}-{int(l)}"
+                    record_counts[key] = record_counts.get(key, 0) + 1
+                top_records = sorted(record_counts.items(), key=lambda x: -x[1])[:12]
+                rec_df = pd.DataFrame(top_records, columns=["Record", "Frequency"])
+                rec_df["Probability"] = (rec_df["Frequency"] / N_SIM * 100).round(1)
+                rec_df["Approx Rank"] = rec_df["Record"].apply(
+                    lambda r: "🏆 Contender" if int(r.split("-")[0]) >= rw_p90 * 0.9
+                              else "✅ Playoff"   if int(r.split("-")[0]) >= thresh_w
+                              else "⚠️ Bubble"   if int(r.split("-")[0]) >= thresh_w - 2
+                              else "❌ Rebuild")
+                st.dataframe(
+                    rec_df[["Record","Probability","Approx Rank"]].style
+                        .format({"Probability": "{:.1f}%"})
+                        .map(lambda v: "color:#21C354; font-weight:bold" if "Contender" in str(v)
+                              else "color:#4fc3f7" if "Playoff" in str(v)
+                              else "color:#FFA500" if "Bubble" in str(v)
+                              else "color:#FF4B4B", subset=["Approx Rank"]),
+                    use_container_width=True, hide_index=True)
+            else:
+                st.info("👆 Configure league settings above and click **🏆 Run Season Simulation**.")
+                st.markdown("""
+                **How this works:**
+                - Your Monte Carlo season projections are broken into weekly scoring segments
+                - Each week, your team's 9 categories are sampled from those distributions and compared against a randomly drawn opponent
+                - A matchup is won if you win more than 4.5 of the 9 categories that week
+                - This repeats across 20 weeks and hundreds of simulated seasons to estimate your true win% and playoff odds
+                - The opponent pool uses a slightly weaker-than-average team profile to simulate realistic league competition
+                """)
