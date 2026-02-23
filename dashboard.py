@@ -1188,6 +1188,299 @@ elif page == "🔍 Player Deep Dive":
         else:
             st.info(f"{name} is already in your target list.")
     st.markdown("---")
+
+    # ══════════════════════════════════════════════════════════
+    #  MONTE CARLO SECTION — Player Deep Dive
+    # ══════════════════════════════════════════════════════════
+    st.markdown("### 🎲 Monte Carlo Projections")
+
+    # Determine if a prior team sim has been run
+    mc_p_cached = st.session_state.get("mc_params")
+    is_hitter_dive = (ptype == "Hitter")
+
+    # Check if this player is in the cached roster
+    in_cached_roster = False
+    if mc_p_cached:
+        roster_set = set(mc_p_cached.get("hitters", ())) | set(mc_p_cached.get("pitchers", ()))
+        in_cached_roster = name in roster_set
+
+    # ── Setup controls ──────────────────────────────────────
+    with st.expander("⚙️ Simulation Settings", expanded=not in_cached_roster):
+        dc1, dc2, dc3, dc4 = st.columns(4)
+        d_n_sim     = dc1.select_slider("Simulations", options=[500,1_000,2_500,5_000,10_000],
+                        value=2_500, key="dive_n_sim")
+        d_inj       = dc2.slider("Injury risk (%)", 0, 40, 15, key="dive_inj",
+                        help="% chance each player misses 15–50% of season")
+        d_regr      = dc3.slider("Mean reversion", 0.0, 1.0, 0.3, 0.05, key="dive_regr",
+                        help="0 = raw history, 1 = fully regress to league avg")
+        d_saber     = dc4.slider("Sabermetric weight", 0.0, 1.0, 0.5, 0.05, key="dive_saber",
+                        help="How much xwOBA/Barrel%/xFIP etc. shift the projection")
+
+        run_dive = st.button("▶️ Run Monte Carlo for this player", type="primary", key="dive_run")
+
+        if in_cached_roster and mc_p_cached and not run_dive:
+            st.info(f"✅ **{name}** is in your cached team sim — showing those results below. "
+                    f"Click the button above to run a fresh player-specific simulation.")
+
+    # ── Run or use cache ────────────────────────────────────
+    # We run a single-player sim: wrap player in a 1-person roster
+    dive_key = f"dive_sim_{name}"
+
+    if run_dive:
+        st.session_state["mc_run_count"] = st.session_state.get("mc_run_count", 0) + 1
+        rc = st.session_state["mc_run_count"]
+        with st.spinner(f"🎲 Running {d_n_sim:,} simulations for {name}..."):
+            if is_hitter_dive:
+                p_sims, all_sims = mc_run_simulation(
+                    hitters=(name,), pitchers=(),
+                    n_sim=d_n_sim, injury_pct=d_inj/100,
+                    regression_pull=d_regr, platoon_boost=False,
+                    saber_weight=d_saber, run_count=rc)
+            else:
+                p_sims, all_sims = mc_run_simulation(
+                    hitters=(), pitchers=(name,),
+                    n_sim=d_n_sim, injury_pct=d_inj/100,
+                    regression_pull=d_regr, platoon_boost=False,
+                    saber_weight=d_saber, run_count=rc)
+        st.session_state[dive_key] = {
+            "team_sims": p_sims, "player_sims": all_sims,
+            "n_sim": d_n_sim, "inj": d_inj, "regr": d_regr, "saber": d_saber,
+        }
+
+    elif in_cached_roster and mc_p_cached and dive_key not in st.session_state:
+        # Use the cached team sim — run the whole team sim again (cached) and extract this player
+        with st.spinner("Loading cached simulation..."):
+            _, cached_player_sims = mc_run_simulation(
+                hitters=mc_p_cached["hitters"], pitchers=mc_p_cached["pitchers"],
+                n_sim=mc_p_cached["n_sim"], injury_pct=mc_p_cached["injury_pct"],
+                regression_pull=mc_p_cached["regression_pull"],
+                platoon_boost=mc_p_cached["platoon_boost"],
+                saber_weight=mc_p_cached.get("saber_weight", 0.5),
+                run_count=mc_p_cached.get("run_count", 0))
+        if name in cached_player_sims:
+            # Build a single-player team_sims equivalent
+            psdf = cached_player_sims[name]
+            cats = MC_H_CATS if is_hitter_dive else MC_P_CATS
+            team_equiv = pd.DataFrame({c: psdf[c].values for c in cats if c in psdf.columns})
+            st.session_state[dive_key] = {
+                "team_sims": team_equiv, "player_sims": cached_player_sims,
+                "n_sim": mc_p_cached["n_sim"], "inj": int(mc_p_cached["injury_pct"]*100),
+                "regr": mc_p_cached["regression_pull"],
+                "saber": mc_p_cached.get("saber_weight", 0.5),
+            }
+
+    # ── Display results ─────────────────────────────────────
+    dive_data = st.session_state.get(dive_key)
+
+    if dive_data is None:
+        st.info("👆 Click **▶️ Run Monte Carlo for this player** above to generate projections.")
+    else:
+        tsims      = dive_data["team_sims"]
+        psims_all  = dive_data["player_sims"]
+        d_n        = dive_data["n_sim"]
+        cats_dive  = MC_H_CATS if is_hitter_dive else MC_P_CATS
+        cats_avail = [c for c in cats_dive if c in tsims.columns]
+
+        st.caption(
+            f"**{d_n:,} simulations** · Injury risk {dive_data['inj']}% · "
+            f"Mean reversion {dive_data['regr']:.2f} · Sabermetric weight {dive_data['saber']:.2f}"
+        )
+
+        # ── P10 / Median / P90 table ──────────────────────
+        st.markdown("#### 📊 Season Projection Ranges")
+        proj_rows = []
+        for cat in cats_avail:
+            vals = tsims[cat].dropna()
+            if len(vals) == 0: continue
+            p10, p25, p50, p75, p90 = np.percentile(vals, [10, 25, 50, 75, 90])
+            cv = round(float(vals.std() / abs(vals.mean()) * 100), 1) if vals.mean() != 0 else 0
+            proj_rows.append({
+                "Category": cat,
+                "Floor (P10)": round(p10, 3 if cat in ["AVG","ERA","WHIP"] else 0),
+                "P25":         round(p25, 3 if cat in ["AVG","ERA","WHIP"] else 0),
+                "Median":      round(p50, 3 if cat in ["AVG","ERA","WHIP"] else 0),
+                "P75":         round(p75, 3 if cat in ["AVG","ERA","WHIP"] else 0),
+                "Ceiling (P90)":round(p90,3 if cat in ["AVG","ERA","WHIP"] else 0),
+                "Volatility (CV%)": cv,
+                "Direction":   "⬇️ Lower=Better" if cat in MC_LOWER_BETTER else "⬆️ Higher=Better",
+            })
+        if proj_rows:
+            proj_df = pd.DataFrame(proj_rows)
+            def _dir_color(val):
+                return "color:#FFA500" if "Lower" in str(val) else "color:#4fc3f7"
+            def _cv_color(val):
+                try:
+                    v = float(val)
+                    if v > 40: return "color:#FF4B4B; font-weight:bold"
+                    if v > 25: return "color:#FFA500"
+                    return "color:#21C354"
+                except: return ""
+            st.dataframe(
+                proj_df.style
+                    .map(_dir_color, subset=["Direction"])
+                    .map(_cv_color,  subset=["Volatility (CV%)"])
+                    .format({"Volatility (CV%)": "{:.1f}%"}),
+                use_container_width=True, hide_index=True)
+            st.caption("**CV%** = volatility. Green < 25% = consistent. Orange 25–40% = variable. Red > 40% = highly unpredictable.")
+
+        st.markdown("---")
+
+        # ── Distribution histograms ───────────────────────
+        st.markdown("#### 📈 Projected Distribution by Category")
+        n_cats = len(cats_avail)
+        hist_cols = st.columns(min(n_cats, 3))
+        for i, cat in enumerate(cats_avail):
+            vals = tsims[cat].dropna().values
+            if len(vals) == 0: continue
+            p10v, p50v, p90v = np.percentile(vals, [10, 50, 90])
+            with hist_cols[i % 3]:
+                fig_h = go.Figure()
+                fig_h.add_trace(go.Histogram(
+                    x=vals, nbinsx=45,
+                    marker_color="#4fc3f7", showlegend=False,
+                    hovertemplate=f"{cat}: %{{x}}<br>Count: %{{y}}<extra></extra>"))
+                # Median line
+                fig_h.add_vline(x=float(p50v), line_dash="dash", line_color="yellow",
+                    annotation_text=f"Med: {p50v:.3f}" if cat in ["AVG","ERA","WHIP"] else f"Med: {int(p50v)}",
+                    annotation_position="top right", annotation_font_size=10)
+                # P10–P90 shaded band
+                fig_h.add_vrect(x0=float(p10v), x1=float(p90v),
+                    fillcolor="rgba(79,195,247,0.10)", line_width=0)
+                # P10 and P90 labels
+                fig_h.add_vline(x=float(p10v), line_dash="dot", line_color="rgba(255,255,255,0.3)",
+                    annotation_text="P10", annotation_position="top left", annotation_font_size=9)
+                fig_h.add_vline(x=float(p90v), line_dash="dot", line_color="rgba(255,255,255,0.3)",
+                    annotation_text="P90", annotation_position="top right", annotation_font_size=9)
+                fig_h.update_layout(
+                    title=dict(text=cat, font_size=14),
+                    template="plotly_dark", height=240,
+                    margin=dict(l=8, r=8, t=36, b=8),
+                    xaxis_title=None, yaxis_title=None)
+                st.plotly_chart(fig_h, use_container_width=True)
+
+        st.markdown("---")
+
+        # ── vs. League median comparison ──────────────────
+        st.markdown("#### 🆚 vs. League Median (Opponent Pool)")
+        with st.spinner("Building opponent pool for comparison..."):
+            rc_opp = dive_data.get("run_count", st.session_state.get("mc_run_count", 0))
+            opp_pool_dive = mc_opponent_pool(
+                n_teams=11, n_sim=min(d_n, 1000),
+                run_count=rc_opp)
+
+        vs_rows = []
+        for cat in cats_avail:
+            if cat not in opp_pool_dive: continue
+            my_vals   = tsims[cat].values
+            opp_vals  = np.concatenate(opp_pool_dive[cat])
+            my_med    = float(np.median(my_vals))
+            opp_med   = float(np.median(opp_vals))
+            n         = min(len(my_vals), len(opp_pool_dive[cat][0]))
+            win_pct   = float(np.mean(my_vals[:n] < opp_pool_dive[cat][0][:n])
+                              if cat in MC_LOWER_BETTER
+                              else np.mean(my_vals[:n] > opp_pool_dive[cat][0][:n])) * 100
+            edge      = my_med - opp_med
+            better    = (edge < 0) if cat in MC_LOWER_BETTER else (edge > 0)
+            strength  = ("💪 Dominant" if win_pct >= 65 else
+                         "✅ Solid"    if win_pct >= 52 else
+                         "⚖️ Toss-up"  if win_pct >= 46 else
+                         "⚠️ Weak"     if win_pct >= 35 else "🚨 Punt")
+            vs_rows.append({
+                "Category":    cat,
+                "Your Median": round(my_med,  3 if cat in ["AVG","ERA","WHIP"] else 1),
+                "Lg Median":   round(opp_med, 3 if cat in ["AVG","ERA","WHIP"] else 1),
+                "Edge":        round(edge,     3 if cat in ["AVG","ERA","WHIP"] else 1),
+                "Win %":       round(win_pct, 1),
+                "Assessment":  strength,
+            })
+
+        if vs_rows:
+            vs_df = pd.DataFrame(vs_rows)
+            def _win_color(val):
+                try:
+                    v = float(val)
+                    if v >= 65: return "color:#21C354; font-weight:bold"
+                    if v >= 52: return "color:#21C354"
+                    if v >= 46: return "color:#FFA500"
+                    if v >= 35: return "color:#FF4B4B"
+                    return "color:#FF4B4B; font-weight:bold"
+                except: return ""
+            def _edge_color(val):
+                try:
+                    v = float(val)
+                    if v > 0: return "color:#21C354"
+                    if v < 0: return "color:#FF4B4B"
+                except: return ""
+            st.dataframe(
+                vs_df.style
+                    .map(_win_color,  subset=["Win %"])
+                    .map(_edge_color, subset=["Edge"])
+                    .format({"Win %": "{:.1f}%"}),
+                use_container_width=True, hide_index=True)
+
+            # Mini radar of win% per category
+            cats_r   = vs_df["Category"].tolist()
+            probs_r  = vs_df["Win %"].tolist()
+            fig_radar = go.Figure()
+            fig_radar.add_trace(go.Scatterpolar(
+                r=probs_r + [probs_r[0]], theta=cats_r + [cats_r[0]],
+                fill="toself", line_color="#4fc3f7",
+                fillcolor="rgba(79,195,247,0.15)", name="Win%"))
+            fig_radar.add_trace(go.Scatterpolar(
+                r=[50] * (len(cats_r) + 1), theta=cats_r + [cats_r[0]],
+                mode="lines", line=dict(dash="dash", color="gray", width=1),
+                name="50% baseline"))
+            fig_radar.update_layout(
+                polar=dict(radialaxis=dict(range=[0, 100], ticksuffix="%", tickfont_size=9)),
+                template="plotly_dark", height=380,
+                legend=dict(orientation="h", y=-0.15),
+                margin=dict(l=40, r=40, t=20, b=60))
+            st.plotly_chart(fig_radar, use_container_width=True)
+
+            exp_cat_wins = sum(r["Win %"] / 100 for _, r in vs_df.iterrows())
+            cats_total   = len(cats_avail)
+            st.metric(
+                f"Expected category wins vs. average opponent (out of {cats_total})",
+                f"{exp_cat_wins:.2f} / {cats_total}",
+                f"{'above' if exp_cat_wins > cats_total/2 else 'below'} .500")
+
+        # ── Sabermetric adjustments for this player ───────
+        sw_dive = dive_data["saber"]
+        if sw_dive > 0:
+            st.markdown("---")
+            with st.expander(f"🔬 Sabermetric Adjustments for {name} (weight {sw_dive:.2f})", expanded=False):
+                lg_h_d = {s: bat_all[s].mean() for s in MC_H_STATS if s in bat_all.columns}
+                lg_p_d = {s: pit_all[s].mean() for s in MC_P_STATS if s in pit_all.columns}
+                src_d  = bat_all if is_hitter_dive else pit_all
+                stats_d= MC_H_STATS if is_hitter_dive else MC_P_STATS
+                base_d = _mc_player_dist(name, src_d, stats_d)
+                adj_d  = _mc_apply_sabermetrics(name, dict(base_d), src_d, is_hitter_dive, sw_dive, lg_h_d, lg_p_d)
+                saber_rows_d = []
+                for cat in cats_avail:
+                    if cat in base_d and cat in adj_d:
+                        bmu = base_d[cat][0]; amu = adj_d[cat][0]; delta = amu - bmu
+                        if abs(delta) > 0.001:
+                            saber_rows_d.append({
+                                "Category": cat,
+                                "Base Projection": round(bmu, 3 if cat in ["AVG","ERA","WHIP"] else 1),
+                                "Saber-Adjusted":  round(amu, 3 if cat in ["AVG","ERA","WHIP"] else 1),
+                                "Delta":           round(delta, 3 if cat in ["AVG","ERA","WHIP"] else 1),
+                                "Impact": "⬆️ Boost" if delta > 0 else "⬇️ Drag",
+                            })
+                if saber_rows_d:
+                    sdf_d = pd.DataFrame(saber_rows_d)
+                    def _cdelta_d(val):
+                        try:
+                            v = float(val)
+                            if v > 0: return "color:#21C354; font-weight:bold"
+                            if v < 0: return "color:#FF4B4B; font-weight:bold"
+                        except: return ""
+                    st.dataframe(sdf_d.style.map(_cdelta_d, subset=["Delta"]),
+                        use_container_width=True, hide_index=True)
+                else:
+                    st.info(f"No significant sabermetric adjustments for {name} — performing close to true-talent indicators.")
+
+    st.markdown("---")
     st.markdown("### 📄 Full Historical Stats")
     drop = [c for c in ["playerid","regression_risk","regression_score","breakout_score",
                          "profile_tag","analysis_summary","rank","composite"] if c in hist.columns]
