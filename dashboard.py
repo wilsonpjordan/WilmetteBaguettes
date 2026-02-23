@@ -781,13 +781,86 @@ def _mc_apply_sabermetrics(name, dist, src_df, is_hitter, saber_weight, lg_h, lg
 
 
 def _mc_sim_player(dist, n_sim, stat_cols, lower_clip=None):
+    """
+    Sample from a Truncated Normal distribution bounded by historically
+    plausible record ceilings/floors (Option 2 + Option 4 combo).
+
+    Truncated Normal keeps the bell-curve shape intact but cannot produce
+    draws outside [lo, hi]. Bounds are grounded in all-time single-season
+    records, preventing absurd values like .860 AVG or negative ERA while
+    preserving realistic variance within the valid range.
+    """
+    # (floor, ceiling) — grounded in historical single-season records
+    STAT_BOUNDS = {
+        # Hitter counting
+        "HR":      (0,     65),
+        "R":       (0,    150),
+        "RBI":     (0,    165),
+        "SB":      (0,     85),
+        "BB":      (0,    170),
+        # Hitter rate
+        "AVG":     (0.150, 0.400),
+        "OBP":     (0.250, 0.550),
+        "SLG":     (0.250, 0.900),
+        "OPS":     (0.500, 1.400),
+        "wOBA":    (0.250, 0.550),
+        "xwOBA":   (0.250, 0.550),
+        "xBA":     (0.150, 0.380),
+        "wRC+":    (30,    230),
+        "BB%":     (0.03,  0.30),
+        "K%":      (0.03,  0.50),
+        "BABIP":   (0.200, 0.450),
+        "Hard%":   (0.10,  0.80),
+        "Barrel%": (0.01,  0.35),
+        "SwStr%":  (0.02,  0.25),
+        "EV":      (75,    100),
+        "maxEV":   (90,    125),
+        "LA":      (-10,    35),
+        "Spd":     (1,      10),
+        "Pull%":   (0.20,  0.65),
+        "GB%":     (0.20,  0.70),
+        "FB%":     (0.10,  0.60),
+        # Pitcher counting
+        "W":       (0,     25),
+        "SO":      (0,    320),
+        "IP":      (0,    250),
+        # Pitcher rate
+        "ERA":     (0.50,  9.00),
+        "WHIP":    (0.60,  2.20),
+        "FIP":     (0.50,  9.00),
+        "xFIP":    (0.50,  9.00),
+        "SIERA":   (0.50,  9.00),
+        "LOB%":    (0.40,  0.95),
+        "HR/FB":   (0.01,  0.30),
+        "CSW%":    (0.15,  0.45),
+        "K-BB%":   (-0.10, 0.40),
+        "K/9":     (1.0,   16.0),
+        "BB/9":    (0.5,    8.0),
+    }
+
     lc = lower_clip or {}
     data = {}
     for s in stat_cols:
         mu, sd = dist.get(s, (0.0, 0.0))
-        draws = np.random.normal(mu, max(sd, 1e-6), n_sim)
-        if s in lc:
-            draws = np.clip(draws, lc[s], None)
+        sd = max(sd, 1e-6)
+
+        if s in STAT_BOUNDS:
+            lo, hi = STAT_BOUNDS[s]
+            if s in lc:
+                lo = max(lo, lc[s])
+            a = (lo - mu) / sd
+            b = (hi - mu) / sd
+            # If mean is outside bounds, clamp before sampling
+            if a >= b:
+                mu = float(np.clip(mu, lo + 1e-6, hi - 1e-6))
+                a = (lo - mu) / sd
+                b = (hi - mu) / sd
+            draws = scipy_stats.truncnorm.rvs(a, b, loc=mu, scale=sd, size=n_sim)
+        else:
+            draws = np.random.normal(mu, sd, n_sim)
+            if s in lc:
+                draws = np.clip(draws, lc[s], None)
+
         data[s] = draws
     return pd.DataFrame(data)
 
