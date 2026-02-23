@@ -1428,41 +1428,6 @@ elif page == "🔍 Player Deep Dive":
                 f"{exp_cat_wins:.2f} / {cats_total}",
                 f"{'above' if exp_cat_wins > cats_total/2 else 'below'} .500")
 
-        # ── Sabermetric adjustments for this player ───────
-        sw_dive = dive_data["saber"]
-        if sw_dive > 0:
-            st.markdown("---")
-            with st.expander(f"🔬 Sabermetric Adjustments for {name} (weight {sw_dive:.2f})", expanded=False):
-                lg_h_d = {s: bat_all[s].mean() for s in MC_H_STATS if s in bat_all.columns}
-                lg_p_d = {s: pit_all[s].mean() for s in MC_P_STATS if s in pit_all.columns}
-                src_d  = bat_all if is_hitter_dive else pit_all
-                stats_d= MC_H_STATS if is_hitter_dive else MC_P_STATS
-                base_d = _mc_player_dist(name, src_d, stats_d)
-                adj_d  = _mc_apply_sabermetrics(name, dict(base_d), src_d, is_hitter_dive, sw_dive, lg_h_d, lg_p_d)
-                saber_rows_d = []
-                for cat in cats_avail:
-                    if cat in base_d and cat in adj_d:
-                        bmu = base_d[cat][0]; amu = adj_d[cat][0]; delta = amu - bmu
-                        if abs(delta) > 0.001:
-                            saber_rows_d.append({
-                                "Category": cat,
-                                "Base Projection": round(bmu, 3 if cat in ["AVG","ERA","WHIP"] else 1),
-                                "Saber-Adjusted":  round(amu, 3 if cat in ["AVG","ERA","WHIP"] else 1),
-                                "Delta":           round(delta, 3 if cat in ["AVG","ERA","WHIP"] else 1),
-                                "Impact": "⬆️ Boost" if delta > 0 else "⬇️ Drag",
-                            })
-                if saber_rows_d:
-                    sdf_d = pd.DataFrame(saber_rows_d)
-                    def _cdelta_d(val):
-                        try:
-                            v = float(val)
-                            if v > 0: return "color:#21C354; font-weight:bold"
-                            if v < 0: return "color:#FF4B4B; font-weight:bold"
-                        except: return ""
-                    st.dataframe(sdf_d.style.map(_cdelta_d, subset=["Delta"]),
-                        use_container_width=True, hide_index=True)
-                else:
-                    st.info(f"No significant sabermetric adjustments for {name} — performing close to true-talent indicators.")
 
     st.markdown("---")
     st.markdown("### 📈 Historical Trends")
@@ -2224,60 +2189,6 @@ elif page == "🎲 Monte Carlo Sim":
                 spc = ["Name", "Type"] + [c for c in MC_H_CATS + MC_P_CATS + ["wRC+","xwOBA","Barrel%","K%","xFIP"] if c in pproj.columns]
                 st.dataframe(pproj[spc].sort_values(["Type", "Name"]), use_container_width=True, hide_index=True)
 
-            # ── Sabermetric adjustments breakdown ─────────────
-            sw = mc_p.get("saber_weight", 0.5)
-            if sw > 0:
-                st.markdown("---")
-                with st.expander(f"🔬 Sabermetric Adjustments Applied (weight = {sw:.2f})", expanded=False):
-                    st.caption(
-                        "Shows how each player's projected means were nudged by sabermetric indicators. "
-                        "Positive delta = projection boosted. Negative = projection lowered."
-                    )
-                    saber_rows = []
-                    lg_h_disp = {s: bat_all[s].mean() for s in MC_H_STATS if s in bat_all.columns}
-                    lg_p_disp = {s: pit_all[s].mean() for s in MC_P_STATS if s in pit_all.columns}
-
-                    for name in list(mc_p["hitters"]) + list(mc_p["pitchers"]):
-                        is_h  = name in mc_p["hitters"]
-                        src   = bat_all if is_h else pit_all
-                        stats = MC_H_STATS if is_h else MC_P_STATS
-                        base  = _mc_player_dist(name, src, stats)
-                        adj   = _mc_apply_sabermetrics(name, dict(base), src, is_h, sw, lg_h_disp, lg_p_disp)
-                        cats  = ["HR","R","RBI","SB","AVG"] if is_h else ["W","ERA","WHIP","SO"]
-                        for cat in cats:
-                            if cat in base and cat in adj:
-                                bmu = base[cat][0]; amu = adj[cat][0]; delta = amu - bmu
-                                if abs(delta) > 0.001:
-                                    saber_rows.append({
-                                        "Player": name, "Type": "Hitter" if is_h else "Pitcher",
-                                        "Category": cat,
-                                        "Base Proj": round(bmu, 3),
-                                        "Saber Adj": round(amu, 3),
-                                        "Delta": round(delta, 3),
-                                        "Direction": "⬆️ Boost" if delta > 0 else "⬇️ Drag",
-                                    })
-                    if saber_rows:
-                        sdf3 = pd.DataFrame(saber_rows).sort_values(["Player","Category"])
-                        def _cdelta(val):
-                            try:
-                                v = float(val)
-                                if v > 0: return "color:#21C354; font-weight:bold"
-                                if v < 0: return "color:#FF4B4B; font-weight:bold"
-                            except: pass
-                            return ""
-                        st.dataframe(
-                            sdf3.style.map(_cdelta, subset=["Delta"]),
-                            use_container_width=True, hide_index=True)
-
-                        st.markdown("**What each indicator does:**")
-                        st.markdown(
-                            "**Hitters:** Barrel% → HR mean · wRC+ → R mean · wOBA → RBI mean · "
-                            "Spd → SB mean · (xwOBA−wOBA) + (xBA−AVG) → AVG mean\n\n"
-                            "**Pitchers:** xFIP/SIERA blend → ERA mean · K-BB% + GB% → WHIP mean · "
-                            "SwStr% → SO mean · K% + GB% → W mean"
-                        )
-                    else:
-                        st.info("No significant sabermetric adjustments for this roster — players are performing close to their true-talent indicators.")
 
         # ── Tab 2: Category Win Odds ───────────────────────────
         with tab_cat:
