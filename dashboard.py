@@ -963,6 +963,44 @@ def mc_opponent_pool(n_teams, n_sim, run_count):
     return {c: np.array(v) for c, v in opp_cat.items() if v}
 
 
+@st.cache_data(ttl=3600)
+def mc_single_player_opp_pool(n_players, n_sim, is_hitter, run_count):
+    """
+    Build a league median for a SINGLE player position by simulating
+    individual players rather than full rosters. This gives an apples-to-apples
+    comparison: one player's projected stats vs. one average player at that position.
+    """
+    np.random.seed(run_count + 777)
+    pool_src  = bat_all if is_hitter else pit_all
+    stat_cols = MC_H_STATS if is_hitter else MC_P_STATS
+    cats      = MC_H_CATS  if is_hitter else MC_P_CATS
+    all_names = pool_src["Name"].dropna().unique().tolist()
+
+    lg   = {s: pool_src[s].mean() for s in stat_cols if s in pool_src.columns}
+    cat_arrays = {c: [] for c in cats}
+
+    chosen = list(np.random.choice(all_names, size=min(n_players, len(all_names)), replace=False))
+    for pname in chosen:
+        dist = _mc_player_dist(pname, pool_src, stat_cols)
+        # Apply light mean reversion only
+        for s in stat_cols:
+            if s in dist and s in lg:
+                mu, sd = dist[s]
+                dist[s] = (mu * 0.7 + lg[s] * 0.3, sd)
+        sims = _mc_sim_player(dist, n_sim, stat_cols, MC_COUNT_FLOORS)
+        # Apply realistic injury rate
+        hurt    = np.random.random(n_sim) < 0.15
+        pct_out = np.random.uniform(0.15, 0.50, n_sim)
+        scale   = np.where(hurt, 1.0 - pct_out, 1.0)
+        for c in cats:
+            if c in sims.columns and c not in MC_LOWER_BETTER:
+                cat_arrays[c].append(np.clip(sims[c].values * scale, 0, None))
+            elif c in sims.columns:
+                cat_arrays[c].append(sims[c].values)
+
+    return {c: np.array(v) for c, v in cat_arrays.items() if v}
+
+
 # ─────────────────────────────────────────────────────────────
 #  SIDEBAR
 # ─────────────────────────────────────────────────────────────
@@ -1118,75 +1156,6 @@ elif page == "🔍 Player Deep Dive":
             else:
                 disp = str(int(round(float(val))))
             cols2[i].metric(stat, disp)
-    st.markdown("---")
-    st.markdown("### 📈 Historical Trends")
-
-    def make_chart(hist, cols_list, dual_axis_col=None, expanded=False, label=""):
-        avail = [c for c in cols_list if c in hist.columns]
-        if not avail: return
-        with st.expander(label, expanded=expanded):
-            if dual_axis_col and dual_axis_col in avail:
-                primary = [c for c in avail if c != dual_axis_col]
-                fig = go.Figure()
-                colors = px.colors.qualitative.Plotly
-                for ci, col in enumerate(primary):
-                    fig.add_trace(go.Scatter(x=hist["Season"], y=hist[col], mode="lines+markers",
-                        name=col, line=dict(color=colors[ci % len(colors)]), yaxis="y1"))
-                fig.add_trace(go.Scatter(x=hist["Season"], y=hist[dual_axis_col], mode="lines+markers",
-                    name=dual_axis_col, line=dict(color=colors[len(primary) % len(colors)], dash="dot", width=2), yaxis="y2"))
-                fig.update_layout(template="plotly_dark", height=300, margin=dict(l=10,r=10,t=10,b=10),
-                    legend=dict(orientation="h", y=1.15), xaxis=dict(tickvals=ALL_YEARS, tickmode="array"),
-                    yaxis=dict(title=", ".join(primary), side="left"),
-                    yaxis2=dict(title=dual_axis_col, side="right", overlaying="y", showgrid=False))
-            else:
-                melt = hist[["Season"] + avail].melt("Season", var_name="Metric", value_name="Value")
-                fig  = px.line(melt, x="Season", y="Value", color="Metric", markers=True,
-                               template="plotly_dark", color_discrete_sequence=px.colors.qualitative.Plotly)
-                fig.update_layout(height=280, margin=dict(l=10,r=10,t=10,b=10), legend=dict(orientation="h", y=1.15))
-                fig.update_xaxes(tickvals=ALL_YEARS, tickmode="array")
-            st.plotly_chart(fig, use_container_width=True)
-
-    if ptype == "Hitter":
-        make_chart(hist, ["HR","R","RBI","SB"],            expanded=True,  label="Counting Stats")
-        make_chart(hist, ["Barrel%","Hard%","EV","maxEV"], expanded=False, label="Quality of Contact")
-        make_chart(hist, ["wOBA","xwOBA","xBA","wRC+"],    expanded=True,  dual_axis_col="wRC+",
-                   label="True Talent (wOBA / xwOBA / xBA  |  wRC+ →)")
-        make_chart(hist, ["BB%","K%","SwStr%"],            expanded=False, label="Plate Discipline")
-        make_chart(hist, ["GB%","FB%","Pull%","LA"],       expanded=False, dual_axis_col="LA",
-                   label="Batted Ball Profile (GB% / FB% / Pull%  |  Launch Angle →)")
-    else:
-        make_chart(hist, ["ERA","WHIP","K/9"],             expanded=True,  dual_axis_col="K/9",
-                   label="Results (ERA / WHIP  |  K/9 →)")
-        make_chart(hist, ["xFIP","SIERA","FIP"],           expanded=True,  label="True Talent (xFIP / SIERA / FIP)")
-        make_chart(hist, ["K%","SwStr%","BB%","CSW%"],     expanded=False, label="Stuff & Command")
-        make_chart(hist, ["BABIP","LOB%","HR/FB"],         expanded=False, label="Luck Indicators")
-        make_chart(hist, ["GB%","FB%","Hard%","Barrel%"],  expanded=False, label="Batted Ball")
-
-    if not rec.empty:
-        st.markdown("---")
-        st.markdown(f"### 🕸️ Category Value Radar ({LATEST})")
-        if ptype == "Hitter":
-            zcats, labels = ["z_HR","z_R","z_RBI","z_SB","z_AVG"], ["HR","R","RBI","SB","AVG"]
-        else:
-            zcats, labels = ["z_W","z_ERA","z_WHIP","z_K"], ["W","ERA","WHIP","K"]
-        vals = [max(-3, min(3, float(rec.iloc[0].get(c,0)))) for c in zcats]
-        fig_r = go.Figure(go.Scatterpolar(r=vals+[vals[0]], theta=labels+[labels[0]],
-            fill="toself", line_color="#4fc3f7", fillcolor="rgba(79,195,247,0.18)"))
-        fig_r.update_layout(polar=dict(radialaxis=dict(range=[-3,3], tickfont_size=9)),
-            template="plotly_dark", height=360, margin=dict(l=40,r=40,t=40,b=40))
-        st.plotly_chart(fig_r, use_container_width=True)
-
-    st.markdown("---")
-    note_input = st.text_input("Add a note (optional)", key="dive_note")
-    if st.button(f"🎯 Add {name} to Target List"):
-        entry = {"name": name, "type": ptype,
-                 "tag":  rec.iloc[0].get("profile_tag","—") if not rec.empty else "—",
-                 "composite": float(rec.iloc[0].get("composite",0)) if not rec.empty else 0,
-                 "note": note_input}
-        if not any(t["name"] == name for t in st.session_state.targets):
-            st.session_state.targets.append(entry); st.success(f"✅ {name} added to your target list!")
-        else:
-            st.info(f"{name} is already in your target list.")
     st.markdown("---")
 
     # ══════════════════════════════════════════════════════════
@@ -1361,37 +1330,52 @@ elif page == "🔍 Player Deep Dive":
         st.markdown("---")
 
         # ── vs. League median comparison ──────────────────
-        st.markdown("#### 🆚 vs. League Median (Opponent Pool)")
-        with st.spinner("Building opponent pool for comparison..."):
+        st.markdown("#### 🆚 vs. Average Player at Position")
+        st.caption(
+            "Compares this player's projected stats against a pool of average players "
+            "at the same position — so HR is one player vs. one player, not a whole team."
+        )
+        with st.spinner("Building position comparison pool..."):
             rc_opp = dive_data.get("run_count", st.session_state.get("mc_run_count", 0))
-            opp_pool_dive = mc_opponent_pool(
-                n_teams=11, n_sim=min(d_n, 1000),
-                run_count=rc_opp)
+            opp_pool_dive = mc_single_player_opp_pool(
+                n_players=30, n_sim=min(d_n, 1000),
+                is_hitter=is_hitter_dive, run_count=rc_opp)
+
+        RATE_CATS = {"AVG", "ERA", "WHIP"}
+
+        def _fmt(val, cat):
+            """Format a stat value appropriately — no trailing zeros."""
+            if cat in RATE_CATS:
+                return round(float(val), 3)
+            return round(float(val), 1)
 
         vs_rows = []
         for cat in cats_avail:
-            if cat not in opp_pool_dive: continue
-            my_vals   = tsims[cat].values
-            opp_vals  = np.concatenate(opp_pool_dive[cat])
-            my_med    = float(np.median(my_vals))
-            opp_med   = float(np.median(opp_vals))
-            n         = min(len(my_vals), len(opp_pool_dive[cat][0]))
-            win_pct   = float(np.mean(my_vals[:n] < opp_pool_dive[cat][0][:n])
-                              if cat in MC_LOWER_BETTER
-                              else np.mean(my_vals[:n] > opp_pool_dive[cat][0][:n])) * 100
-            edge      = my_med - opp_med
-            better    = (edge < 0) if cat in MC_LOWER_BETTER else (edge > 0)
-            strength  = ("💪 Dominant" if win_pct >= 65 else
-                         "✅ Solid"    if win_pct >= 52 else
-                         "⚖️ Toss-up"  if win_pct >= 46 else
-                         "⚠️ Weak"     if win_pct >= 35 else "🚨 Punt")
+            if cat not in opp_pool_dive or len(opp_pool_dive[cat]) == 0: continue
+            my_vals  = tsims[cat].values
+            # opp_pool_dive[cat] is shape (n_players, n_sim) — take median across players
+            opp_med_per_player = np.median(opp_pool_dive[cat], axis=1)  # one median per player
+            opp_med  = float(np.median(opp_med_per_player))
+            my_med   = float(np.median(my_vals))
+            # Win% vs a randomly selected average player
+            opp_flat = opp_pool_dive[cat].flatten()
+            n        = min(len(my_vals), len(opp_flat))
+            win_pct  = float(
+                np.mean(my_vals[:n] < opp_flat[:n]) if cat in MC_LOWER_BETTER
+                else np.mean(my_vals[:n] > opp_flat[:n])
+            ) * 100
+            edge     = my_med - opp_med
+            strength = ("💪 Dominant" if win_pct >= 65 else
+                        "✅ Solid"    if win_pct >= 52 else
+                        "⚖️ Toss-up"  if win_pct >= 46 else
+                        "⚠️ Weak"     if win_pct >= 35 else "🚨 Punt")
             vs_rows.append({
-                "Category":    cat,
-                "Your Median": round(my_med,  3 if cat in ["AVG","ERA","WHIP"] else 1),
-                "Lg Median":   round(opp_med, 3 if cat in ["AVG","ERA","WHIP"] else 1),
-                "Edge":        round(edge,     3 if cat in ["AVG","ERA","WHIP"] else 1),
-                "Win %":       round(win_pct, 1),
-                "Assessment":  strength,
+                "Category":       cat,
+                "Your Median":    _fmt(my_med,  cat),
+                "Avg Player Med": _fmt(opp_med, cat),
+                "Edge":           _fmt(edge,    cat),
+                "Win %":          round(win_pct, 1),
+                "Assessment":     strength,
             })
 
         if vs_rows:
@@ -1415,7 +1399,7 @@ elif page == "🔍 Player Deep Dive":
                 vs_df.style
                     .map(_win_color,  subset=["Win %"])
                     .map(_edge_color, subset=["Edge"])
-                    .format({"Win %": "{:.1f}%"}),
+                    .format({"Win %": "{:.1f}%", "Your Median": "{}", "Avg Player Med": "{}", "Edge": "{}"}),
                 use_container_width=True, hide_index=True)
 
             # Mini radar of win% per category
@@ -1480,6 +1464,75 @@ elif page == "🔍 Player Deep Dive":
                 else:
                     st.info(f"No significant sabermetric adjustments for {name} — performing close to true-talent indicators.")
 
+    st.markdown("---")
+    st.markdown("### 📈 Historical Trends")
+
+    def make_chart(hist, cols_list, dual_axis_col=None, expanded=False, label=""):
+        avail = [c for c in cols_list if c in hist.columns]
+        if not avail: return
+        with st.expander(label, expanded=expanded):
+            if dual_axis_col and dual_axis_col in avail:
+                primary = [c for c in avail if c != dual_axis_col]
+                fig = go.Figure()
+                colors = px.colors.qualitative.Plotly
+                for ci, col in enumerate(primary):
+                    fig.add_trace(go.Scatter(x=hist["Season"], y=hist[col], mode="lines+markers",
+                        name=col, line=dict(color=colors[ci % len(colors)]), yaxis="y1"))
+                fig.add_trace(go.Scatter(x=hist["Season"], y=hist[dual_axis_col], mode="lines+markers",
+                    name=dual_axis_col, line=dict(color=colors[len(primary) % len(colors)], dash="dot", width=2), yaxis="y2"))
+                fig.update_layout(template="plotly_dark", height=300, margin=dict(l=10,r=10,t=10,b=10),
+                    legend=dict(orientation="h", y=1.15), xaxis=dict(tickvals=ALL_YEARS, tickmode="array"),
+                    yaxis=dict(title=", ".join(primary), side="left"),
+                    yaxis2=dict(title=dual_axis_col, side="right", overlaying="y", showgrid=False))
+            else:
+                melt = hist[["Season"] + avail].melt("Season", var_name="Metric", value_name="Value")
+                fig  = px.line(melt, x="Season", y="Value", color="Metric", markers=True,
+                               template="plotly_dark", color_discrete_sequence=px.colors.qualitative.Plotly)
+                fig.update_layout(height=280, margin=dict(l=10,r=10,t=10,b=10), legend=dict(orientation="h", y=1.15))
+                fig.update_xaxes(tickvals=ALL_YEARS, tickmode="array")
+            st.plotly_chart(fig, use_container_width=True)
+
+    if ptype == "Hitter":
+        make_chart(hist, ["HR","R","RBI","SB"],            expanded=True,  label="Counting Stats")
+        make_chart(hist, ["Barrel%","Hard%","EV","maxEV"], expanded=False, label="Quality of Contact")
+        make_chart(hist, ["wOBA","xwOBA","xBA","wRC+"],    expanded=True,  dual_axis_col="wRC+",
+                   label="True Talent (wOBA / xwOBA / xBA  |  wRC+ →)")
+        make_chart(hist, ["BB%","K%","SwStr%"],            expanded=False, label="Plate Discipline")
+        make_chart(hist, ["GB%","FB%","Pull%","LA"],       expanded=False, dual_axis_col="LA",
+                   label="Batted Ball Profile (GB% / FB% / Pull%  |  Launch Angle →)")
+    else:
+        make_chart(hist, ["ERA","WHIP","K/9"],             expanded=True,  dual_axis_col="K/9",
+                   label="Results (ERA / WHIP  |  K/9 →)")
+        make_chart(hist, ["xFIP","SIERA","FIP"],           expanded=True,  label="True Talent (xFIP / SIERA / FIP)")
+        make_chart(hist, ["K%","SwStr%","BB%","CSW%"],     expanded=False, label="Stuff & Command")
+        make_chart(hist, ["BABIP","LOB%","HR/FB"],         expanded=False, label="Luck Indicators")
+        make_chart(hist, ["GB%","FB%","Hard%","Barrel%"],  expanded=False, label="Batted Ball")
+
+    if not rec.empty:
+        st.markdown("---")
+        st.markdown(f"### 🕸️ Category Value Radar ({LATEST})")
+        if ptype == "Hitter":
+            zcats, labels = ["z_HR","z_R","z_RBI","z_SB","z_AVG"], ["HR","R","RBI","SB","AVG"]
+        else:
+            zcats, labels = ["z_W","z_ERA","z_WHIP","z_K"], ["W","ERA","WHIP","K"]
+        vals = [max(-3, min(3, float(rec.iloc[0].get(c,0)))) for c in zcats]
+        fig_r = go.Figure(go.Scatterpolar(r=vals+[vals[0]], theta=labels+[labels[0]],
+            fill="toself", line_color="#4fc3f7", fillcolor="rgba(79,195,247,0.18)"))
+        fig_r.update_layout(polar=dict(radialaxis=dict(range=[-3,3], tickfont_size=9)),
+            template="plotly_dark", height=360, margin=dict(l=40,r=40,t=40,b=40))
+        st.plotly_chart(fig_r, use_container_width=True)
+
+    st.markdown("---")
+    note_input = st.text_input("Add a note (optional)", key="dive_note")
+    if st.button(f"🎯 Add {name} to Target List"):
+        entry = {"name": name, "type": ptype,
+                 "tag":  rec.iloc[0].get("profile_tag","—") if not rec.empty else "—",
+                 "composite": float(rec.iloc[0].get("composite",0)) if not rec.empty else 0,
+                 "note": note_input}
+        if not any(t["name"] == name for t in st.session_state.targets):
+            st.session_state.targets.append(entry); st.success(f"✅ {name} added to your target list!")
+        else:
+            st.info(f"{name} is already in your target list.")
     st.markdown("---")
     st.markdown("### 📄 Full Historical Stats")
     drop = [c for c in ["playerid","regression_risk","regression_score","breakout_score",
