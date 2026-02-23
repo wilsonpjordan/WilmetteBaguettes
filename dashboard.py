@@ -1393,7 +1393,7 @@ elif page == "🎲 Monte Carlo Sim":
     # ── Core Monte Carlo function ──────────────────────────────
     @st.cache_data(show_spinner=False, ttl=600)
     def run_monte_carlo(hitters, pitchers, n_sim, injury_pct,
-                        regression_pull, platoon_boost, seed=42):
+                        regression_pull, platoon_boost, seed=42, run_count=0):
         np.random.seed(seed)
         lg_h = {s: bat_all[s].mean() for s in H_STATS if s in bat_all.columns}
         lg_p = {s: pit_all[s].mean() for s in P_STATS if s in pit_all.columns}
@@ -1495,8 +1495,9 @@ elif page == "🎲 Monte Carlo Sim":
         disabled=(len(mc_hitters) == 0 and len(mc_pitchers) == 0),
     )
 
-    # Save params and trigger flag on button click
+    # Increment run_count on each click so cache key is always unique
     if run_clicked:
+        st.session_state["mc_run_count"] = st.session_state.get("mc_run_count", 0) + 1
         st.session_state["mc_params"] = {
             "n_sim": n_sim_val,
             "league_size": league_size_mc,
@@ -1505,6 +1506,7 @@ elif page == "🎲 Monte Carlo Sim":
             "injury_pct": injury_pct_val / 100,
             "regression_pull": regr_pull_val,
             "platoon_boost": platoon_val,
+            "run_count": st.session_state["mc_run_count"],
         }
 
     st.markdown("---")
@@ -1533,6 +1535,7 @@ elif page == "🎲 Monte Carlo Sim":
                 injury_pct     = mc_p["injury_pct"],
                 regression_pull= mc_p["regression_pull"],
                 platoon_boost  = mc_p["platoon_boost"],
+                run_count      = mc_p.get("run_count", 0),
             )
 
         # ── Tab 1: Season Projections ──────────────────────────
