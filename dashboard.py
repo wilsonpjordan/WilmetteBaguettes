@@ -1694,10 +1694,10 @@ elif page == "🎲 Monte Carlo Sim":
                         alt_p = tuple(pp if pp != swap_out else swap_in for pp in mc_p["pitchers"])
 
                     with st.spinner("Running alternative simulation..."):
-                        alt_sims, _ = run_monte_carlo(
+                        alt_sims, _ = mc_run_simulation(
                             alt_h, alt_p, mc_p["n_sim"],
                             mc_p["injury_pct"], mc_p["regression_pull"],
-                            mc_p["platoon_boost"], seed=77)
+                            mc_p["platoon_boost"], run_count=mc_p.get("run_count", 0) + 77)
 
                     st.markdown(f"#### Comparing: **{swap_out}** → **{swap_in}**")
                     comp_rows = []
@@ -1752,10 +1752,10 @@ elif page == "🎲 Monte Carlo Sim":
                     st.warning("Add at least one opponent player.")
                 else:
                     with st.spinner("Simulating matchup..."):
-                        opp_sims, _ = run_monte_carlo(
+                        opp_sims, _ = mc_run_simulation(
                             tuple(opp_hitters), tuple(opp_pitchers), mc_p["n_sim"],
                             mc_p["injury_pct"], mc_p["regression_pull"],
-                            mc_p["platoon_boost"], seed=55)
+                            mc_p["platoon_boost"], run_count=mc_p.get("run_count", 0) + 55)
 
                     h2h_rows = []; my_score = 0; opp_score = 0
                     for cat in MC_ALL_CATS:
