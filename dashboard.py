@@ -600,16 +600,72 @@ MC_P_STATS      = ["W","ERA","WHIP","SO","K%","xFIP","SIERA","BB%","SwStr%","GB%
 
 
 def _mc_player_dist(name, src_df, stat_cols):
-    hist = src_df[src_df["Name"] == name][stat_cols].dropna(how="all")
+    """
+    Build (mean, std) for each stat from historical seasons.
+    Partial seasons (< 130 G or < 400 PA for hitters, < 25 GS for pitchers)
+    are scaled up to full-season equivalents before fitting, so a 60-game
+    half-season doesn't drag the mean down or inflate variance.
+    Std dev is capped at 25% of the mean so we don't get absurd distributions
+    from small samples.
+    """
+    hist = src_df[src_df["Name"] == name].copy()
+    if hist.empty:
+        return {s: (0.0, 0.0) for s in stat_cols}
+
+    # Determine per-season scale factors to normalize to a full season
+    counting = {"HR","R","RBI","SB","W","SO","BB","G","GS","IP","PA"}
+    full_g   = 162
+    full_gs  = 32
+    full_pa  = 650
+    full_ip  = 180
+
+    scaled_rows = []
+    for _, row in hist.iterrows():
+        row = row.copy()
+        g   = row.get("G",  full_g)
+        gs  = row.get("GS", full_gs)
+        pa  = row.get("PA", full_pa)
+        ip  = row.get("IP", full_ip)
+
+        # Choose the best denominator available
+        if "GS" in src_df.columns and not pd.isna(gs) and gs > 0:
+            scale = full_gs / max(gs, 1)    # pitcher
+        elif "PA" in src_df.columns and not pd.isna(pa) and pa > 0:
+            scale = full_pa / max(pa, 1)    # hitter
+        elif not pd.isna(g) and g > 0:
+            scale = full_g  / max(g,  1)
+        else:
+            scale = 1.0
+
+        # Only scale up partial seasons; don't scale down full ones
+        scale = min(scale, 2.5)  # cap at 2.5x to avoid exploding tiny samples
+
+        for s in stat_cols:
+            if s in counting and s in row.index and pd.notna(row[s]):
+                row[s] = row[s] * scale
+        scaled_rows.append(row)
+
+    if not scaled_rows:
+        return {s: (0.0, 0.0) for s in stat_cols}
+
+    scaled = pd.DataFrame(scaled_rows)
     out = {}
     for s in stat_cols:
-        vals = hist[s].dropna()
-        if len(vals) >= 2:
-            out[s] = (float(vals.mean()), float(vals.std()))
-        elif len(vals) == 1:
-            v = float(vals.iloc[0]); out[s] = (v, abs(v) * 0.15)
-        else:
+        if s not in scaled.columns:
+            out[s] = (0.0, 0.0); continue
+        vals = scaled[s].dropna()
+        if len(vals) == 0:
             out[s] = (0.0, 0.0)
+        elif len(vals) == 1:
+            mu = float(vals.iloc[0])
+            # Single season: use 10% of mean as uncertainty, minimum 0.5
+            out[s] = (mu, max(abs(mu) * 0.10, 0.5))
+        else:
+            mu = float(vals.mean())
+            sd = float(vals.std())
+            # Cap std dev at 25% of mean (minimum 0.5) to prevent zero-spike distributions
+            sd = min(sd, max(abs(mu) * 0.25, 0.5))
+            out[s] = (mu, sd)
     return out
 
 
