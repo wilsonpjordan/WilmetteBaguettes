@@ -600,46 +600,28 @@ MC_P_STATS      = ["W","ERA","WHIP","SO","K%","xFIP","SIERA","BB%","SwStr%","GB%
 
 
 def _mc_player_dist(name, src_df, stat_cols):
-    """
-    Build (mean, std) for each stat from historical seasons.
-    Partial seasons (< 130 G or < 400 PA for hitters, < 25 GS for pitchers)
-    are scaled up to full-season equivalents before fitting, so a 60-game
-    half-season doesn't drag the mean down or inflate variance.
-    Std dev is capped at 25% of the mean so we don't get absurd distributions
-    from small samples.
-    """
+    """Build (mean, std) for each stat, normalising partial seasons to full-season equivalents."""
     hist = src_df[src_df["Name"] == name].copy()
     if hist.empty:
         return {s: (0.0, 0.0) for s in stat_cols}
 
-    # Determine per-season scale factors to normalize to a full season
     counting = {"HR","R","RBI","SB","W","SO","BB","G","GS","IP","PA"}
-    full_g   = 162
-    full_gs  = 32
-    full_pa  = 650
-    full_ip  = 180
+    full_g, full_gs, full_pa, full_ip = 162, 32, 650, 180
 
     scaled_rows = []
     for _, row in hist.iterrows():
         row = row.copy()
-        g   = row.get("G",  full_g)
-        gs  = row.get("GS", full_gs)
-        pa  = row.get("PA", full_pa)
-        ip  = row.get("IP", full_ip)
-
-        # Choose the best denominator available
+        g  = row.get("G",  full_g);  gs = row.get("GS", full_gs)
+        pa = row.get("PA", full_pa); ip = row.get("IP", full_ip)
         if "GS" in src_df.columns and not pd.isna(gs) and gs > 0:
-            scale = full_gs / max(gs, 1)    # pitcher
+            scale = full_gs / max(gs, 1)
         elif "PA" in src_df.columns and not pd.isna(pa) and pa > 0:
-            scale = full_pa / max(pa, 1)    # hitter
+            scale = full_pa / max(pa, 1)
         elif not pd.isna(g) and g > 0:
             scale = full_g  / max(g,  1)
         else:
             scale = 1.0
-
-        # Only scale up partial seasons; don't scale down full ones
-        scale = min(scale, 2.5)  # cap at 2.5x to avoid exploding tiny samples
-
+        scale = min(scale, 2.5)
         for s in stat_cols:
             if s in counting and s in row.index and pd.notna(row[s]):
                 row[s] = row[s] * scale
@@ -658,15 +640,144 @@ def _mc_player_dist(name, src_df, stat_cols):
             out[s] = (0.0, 0.0)
         elif len(vals) == 1:
             mu = float(vals.iloc[0])
-            # Single season: use 10% of mean as uncertainty, minimum 0.5
             out[s] = (mu, max(abs(mu) * 0.10, 0.5))
         else:
-            mu = float(vals.mean())
-            sd = float(vals.std())
-            # Cap std dev at 25% of mean (minimum 0.5) to prevent zero-spike distributions
+            mu = float(vals.mean()); sd = float(vals.std())
             sd = min(sd, max(abs(mu) * 0.25, 0.5))
             out[s] = (mu, sd)
     return out
+
+
+def _mc_apply_sabermetrics(name, dist, src_df, is_hitter, saber_weight, lg_h, lg_p):
+    """
+    Adjust projected means using sabermetric indicators.
+    saber_weight 0.0 = pure counting-stat history, 1.0 = fully sabermetric-adjusted.
+
+    Hitters
+    -------
+    HR   : Barrel% z-score continuously scales HR mean (+/- up to 20%)
+    R    : wRC+ z-score scales R mean (+/- up to 15%)
+    RBI  : wOBA z-score scales RBI mean (+/- up to 15%)
+    SB   : Spd score z-score scales SB mean (+/- up to 20%)
+    AVG  : xwOBA-wOBA gap nudges AVG mean; xBA-AVG gap also applied
+
+    Pitchers
+    --------
+    ERA  : blended toward xFIP/SIERA (luck correction)
+    WHIP : K-BB% z-score scales WHIP mean; GB% bonus for groundballers
+    SO   : SwStr% z-score continuously scales SO mean (+/- up to 15%)
+    W    : K/9 and GB% adjust slightly (sustainable wins indicator)
+    """
+    if saber_weight <= 0:
+        return dist
+
+    hist = src_df[src_df["Name"] == name]
+    if hist.empty:
+        return dist
+
+    latest = hist.sort_values("Season").iloc[-1]
+
+    def _safe(col):
+        v = latest.get(col, np.nan)
+        return float(v) if pd.notna(v) else None
+
+    def _z(val, mu, sd):
+        if sd and sd > 0: return (val - mu) / sd
+        return 0.0
+
+    def _adjust(dist, stat, factor):
+        """Blend current mean with sabermetric-adjusted mean."""
+        if stat not in dist: return dist
+        mu, sd = dist[stat]
+        adj_mu = mu * factor
+        blended = mu * (1 - saber_weight) + adj_mu * saber_weight
+        dist[stat] = (blended, sd)
+        return dist
+
+    if is_hitter:
+        # ── HR: Barrel% ──────────────────────────────────────
+        barrel  = _safe("Barrel%"); lg_barrel = lg_h.get("Barrel%", 0.08)
+        sd_barrel = 0.04
+        if barrel is not None:
+            bz = _z(barrel, lg_barrel, sd_barrel)
+            factor = 1.0 + np.clip(bz * 0.08, -0.20, 0.20)   # ±20% max
+            dist = _adjust(dist, "HR", factor)
+
+        # ── R: wRC+ ──────────────────────────────────────────
+        wrcplus = _safe("wRC+"); lg_wrc = lg_h.get("wRC+", 100)
+        sd_wrc  = 20
+        if wrcplus is not None:
+            wz = _z(wrcplus, lg_wrc, sd_wrc)
+            factor = 1.0 + np.clip(wz * 0.05, -0.15, 0.15)
+            dist = _adjust(dist, "R", factor)
+
+        # ── RBI: wOBA ────────────────────────────────────────
+        woba = _safe("wOBA"); lg_woba = lg_h.get("wOBA", 0.320)
+        sd_woba = 0.040
+        if woba is not None:
+            wobaz = _z(woba, lg_woba, sd_woba)
+            factor = 1.0 + np.clip(wobaz * 0.05, -0.15, 0.15)
+            dist = _adjust(dist, "RBI", factor)
+
+        # ── SB: Spd score ────────────────────────────────────
+        spd = _safe("Spd"); lg_spd = lg_h.get("Spd", 4.5)
+        sd_spd = 1.8
+        if spd is not None:
+            sz = _z(spd, lg_spd, sd_spd)
+            factor = 1.0 + np.clip(sz * 0.08, -0.20, 0.20)
+            dist = _adjust(dist, "SB", factor)
+
+        # ── AVG: xwOBA vs wOBA gap + xBA vs AVG gap ──────────
+        if "AVG" in dist:
+            mu_avg, sd_avg = dist["AVG"]
+            adj = 0.0
+            xwoba = _safe("xwOBA"); woba2 = _safe("wOBA")
+            if xwoba is not None and woba2 is not None:
+                adj += (xwoba - woba2) * 0.30   # outperforming xwOBA → slight AVG drag
+            xba = _safe("xBA"); avg2 = _safe("AVG")
+            if xba is not None and avg2 is not None:
+                adj += (xba - avg2) * 0.40       # xBA below AVG → AVG should fall
+            blended_adj = mu_avg * (1 - saber_weight) + (mu_avg + adj) * saber_weight
+            dist["AVG"] = (float(np.clip(blended_adj, 0.150, 0.400)), sd_avg)
+
+    else:  # pitcher
+        # ── ERA: blend toward xFIP / SIERA ───────────────────
+        era   = _safe("ERA");   xfip  = _safe("xFIP"); siera = _safe("SIERA")
+        if "ERA" in dist and (xfip is not None or siera is not None):
+            mu_era, sd_era = dist["ERA"]
+            true_era = np.nanmean([v for v in [xfip, siera] if v is not None])
+            blended  = mu_era * (1 - saber_weight) + true_era * saber_weight
+            dist["ERA"] = (float(np.clip(blended, 1.5, 8.0)), sd_era)
+
+        # ── WHIP: K-BB% z-score + GB% bonus ──────────────────
+        kbb = _safe("K-BB%"); gb = _safe("GB%")
+        lg_kbb = lg_p.get("K-BB%", 0.12); sd_kbb = 0.07
+        if "WHIP" in dist and kbb is not None:
+            kbbz = _z(kbb, lg_kbb, sd_kbb)
+            factor = 1.0 + np.clip(-kbbz * 0.04, -0.12, 0.12)  # high K-BB% → lower WHIP
+            dist = _adjust(dist, "WHIP", factor)
+        if "WHIP" in dist and gb is not None:
+            gb_bonus = np.clip((gb - 0.44) * 0.15, -0.06, 0.06)
+            mu_w, sd_w = dist["WHIP"]
+            blended = mu_w * (1 - saber_weight) + (mu_w - gb_bonus) * saber_weight
+            dist["WHIP"] = (float(np.clip(blended, 0.80, 2.20)), sd_w)
+
+        # ── SO: SwStr% continuous scale ───────────────────────
+        swstr = _safe("SwStr%"); lg_sw = lg_p.get("SwStr%", 0.115); sd_sw = 0.025
+        if swstr is not None and "SO" in dist:
+            swz = _z(swstr, lg_sw, sd_sw)
+            factor = 1.0 + np.clip(swz * 0.05, -0.15, 0.15)
+            dist = _adjust(dist, "SO", factor)
+
+        # ── W: slight boost for high K% + GB% (sustainable wins)
+        kpct = _safe("K%"); lg_k = lg_p.get("K%", 0.22); sd_k = 0.05
+        if kpct is not None and gb is not None and "W" in dist:
+            kz = _z(kpct, lg_k, sd_k)
+            gb_bonus = np.clip((gb - 0.44) * 0.10, -0.04, 0.04)
+            factor = 1.0 + np.clip(kz * 0.02 + gb_bonus, -0.08, 0.08)
+            dist = _adjust(dist, "W", factor)
+
+    return dist
 
 
 def _mc_sim_player(dist, n_sim, stat_cols, lower_clip=None):
@@ -681,35 +792,33 @@ def _mc_sim_player(dist, n_sim, stat_cols, lower_clip=None):
     return pd.DataFrame(data)
 
 
-# run_count is in the signature so every button press = unique cache key = fresh sim
 @st.cache_data(show_spinner=False, ttl=3600)
 def mc_run_simulation(hitters, pitchers, n_sim, injury_pct,
-                      regression_pull, platoon_boost, run_count):
+                      regression_pull, platoon_boost, saber_weight, run_count):
     """
-    injury_pct: float 0.0–0.40, passed in already divided by 100.
-      Controls BOTH the probability of an IL stint AND its severity:
-        - P(IL stint this season) = injury_pct  (e.g. 0.15 → 15% of sims)
-        - When injured, player misses 15–50% of games (scaled by severity)
-        - At 0% → no injuries fire at all
-        - At 40% → 40% of sims have an injury, missing 15–50% of the season
+    injury_pct   : 0.0–0.40  — probability each player suffers an IL stint
+    regression_pull: 0.0–1.0 — pull means toward league average
+    saber_weight : 0.0–1.0  — how much sabermetric adjustments shift the projected means
+    run_count    : int       — unique per button-press to bust the cache
     """
     np.random.seed(run_count)
     lg_h = {s: bat_all[s].mean() for s in MC_H_STATS if s in bat_all.columns}
     lg_p = {s: pit_all[s].mean() for s in MC_P_STATS if s in pit_all.columns}
+    # Also need K-BB% for pitchers
+    if "K-BB%" not in lg_p and "K%" in pit_all.columns and "BB%" in pit_all.columns:
+        pit_all_copy = pit_all.copy()
+        pit_all_copy["K-BB%"] = pit_all_copy["K%"] - pit_all_copy["BB%"]
+        lg_p["K-BB%"] = float(pit_all_copy["K-BB%"].mean())
 
     def pull(mu, la, strength):
         return mu * (1 - strength) + la * strength
 
     def apply_injury(sims, counting_stats, inj_prob):
-        """Per-player injury: each sim independently draws whether injured,
-        then how much of the season is lost (15–50% of games)."""
         if inj_prob <= 0:
             return sims
-        # Each sim: did this player get hurt? (independent per player per sim)
         hurt    = np.random.random(n_sim) < inj_prob
-        # Severity: fraction of season missed, uniform 0.15–0.50
         pct_out = np.random.uniform(0.15, 0.50, n_sim)
-        scale   = np.where(hurt, 1.0 - pct_out, 1.0)   # 1.0 if healthy, <1 if hurt
+        scale   = np.where(hurt, 1.0 - pct_out, 1.0)
         for s in counting_stats:
             if s in sims.columns:
                 sims[s] = np.clip(sims[s] * scale, 0, None)
@@ -720,10 +829,14 @@ def mc_run_simulation(hitters, pitchers, n_sim, injury_pct,
 
     for name in hitters:
         dist = _mc_player_dist(name, bat_all, MC_H_STATS)
+        # 1. Mean reversion toward league average
         for s in MC_H_STATS:
             if s in dist and s in lg_h:
                 mu, sd = dist[s]; dist[s] = (pull(mu, lg_h[s], regression_pull), sd)
-        if platoon_boost and "Barrel%" in dist and "HR" in dist:
+        # 2. Sabermetric adjustments
+        dist = _mc_apply_sabermetrics(name, dist, bat_all, True, saber_weight, lg_h, lg_p)
+        # 3. Legacy platoon boost (only if saber_weight == 0, otherwise saber handles it)
+        if platoon_boost and saber_weight == 0 and "Barrel%" in dist and "HR" in dist:
             bmu, _ = dist["Barrel%"]; hmu, hsd = dist["HR"]
             dist["HR"] = (hmu * 1.10 if bmu > 0.12 else hmu * 0.92 if bmu < 0.07 else hmu, hsd)
         sims = _mc_sim_player(dist, n_sim, MC_H_STATS, MC_COUNT_FLOORS)
@@ -741,7 +854,8 @@ def mc_run_simulation(hitters, pitchers, n_sim, injury_pct,
         for s in MC_P_STATS:
             if s in dist and s in lg_p:
                 mu, sd = dist[s]; dist[s] = (pull(mu, lg_p[s], regression_pull), sd)
-        if platoon_boost and "SwStr%" in dist and "SO" in dist:
+        dist = _mc_apply_sabermetrics(name, dist, pit_all, False, saber_weight, lg_h, lg_p)
+        if platoon_boost and saber_weight == 0 and "SwStr%" in dist and "SO" in dist:
             swmu, _ = dist["SwStr%"]; somu, sosd = dist["SO"]
             dist["SO"] = (somu * 1.08 if swmu > 0.14 else somu * 0.93 if swmu < 0.09 else somu, sosd)
         sims = _mc_sim_player(dist, n_sim, MC_P_STATS, MC_COUNT_FLOORS)
@@ -770,7 +884,7 @@ def mc_opponent_pool(n_teams, n_sim, run_count):
     for i in range(n_teams):
         hs = tuple(np.random.choice(all_h, size=min(9, len(all_h)), replace=False))
         ps = tuple(np.random.choice(all_p, size=min(7, len(all_p)), replace=False))
-        odf, _ = mc_run_simulation(hs, ps, n_sim, 0.15, 0.3, True, run_count=run_count + i)
+        odf, _ = mc_run_simulation(hs, ps, n_sim, 0.15, 0.3, True, 0.5, run_count=run_count + i)
         for c in MC_ALL_CATS:
             if c in odf.columns: opp_cat[c].append(odf[c].values)
     return {c: np.array(v) for c, v in opp_cat.items() if v}
@@ -1564,12 +1678,21 @@ elif page == "🎲 Monte Carlo Sim":
     mc_pitchers = st.multiselect("My Pitchers (up to 10)", options=all_p_names_mc,
         default=[p for p in pre_p if p in all_p_names_mc], max_selections=10, key="mc_pitchers")
 
-    adv1, adv2, adv3 = st.columns(3)
+    adv1, adv2, adv3, adv4 = st.columns(4)
     injury_pct_val   = adv1.slider("Injury risk per player (%)", 0, 40, 15,
         help="Probability (%) that each player suffers an IL stint this season. When injured, they miss 15–50% of games. 0% = no injuries modeled. 15% = realistic baseline. 40% = high-injury pessimistic scenario.")
     regr_pull_val    = adv2.slider("Mean-reversion strength", 0.0, 1.0, 0.3, 0.05,
-        help="0 = raw historical mean. 1 = fully regress to league average.")
-    platoon_val      = adv3.checkbox("Apply Barrel%/SwStr% quality multiplier", value=True)
+        help="0 = use raw historical mean. 1 = fully pull toward league average.")
+    saber_weight_val = adv3.slider("Sabermetric weight", 0.0, 1.0, 0.5, 0.05,
+        help="How much sabermetric indicators adjust the projected means.\n\n"
+             "0 = pure counting-stat history only.\n"
+             "0.5 = balanced blend (recommended).\n"
+             "1.0 = fully sabermetric-driven.\n\n"
+             "Hitters: Barrel% → HR, wRC+ → R, wOBA → RBI, Spd → SB, xwOBA/xBA → AVG\n"
+             "Pitchers: xFIP/SIERA → ERA, K-BB%/GB% → WHIP, SwStr% → SO, K%/GB% → W")
+    platoon_val      = adv4.checkbox("Legacy Barrel%/SwStr% boost", value=False,
+        help="Old 3-bucket quality multiplier. Only applies when Sabermetric weight = 0. "
+             "When saber weight > 0, the continuous sabermetric adjustments replace this.")
 
     run_clicked = st.button(
         "▶️ Run Monte Carlo Simulation", type="primary",
@@ -1586,6 +1709,7 @@ elif page == "🎲 Monte Carlo Sim":
             "pitchers": tuple(mc_pitchers),
             "injury_pct": injury_pct_val / 100,
             "regression_pull": regr_pull_val,
+            "saber_weight": saber_weight_val,
             "platoon_boost": platoon_val,
             "run_count": st.session_state["mc_run_count"],
         }
@@ -1616,6 +1740,7 @@ elif page == "🎲 Monte Carlo Sim":
                 injury_pct     = mc_p["injury_pct"],
                 regression_pull= mc_p["regression_pull"],
                 platoon_boost  = mc_p["platoon_boost"],
+                saber_weight   = mc_p.get("saber_weight", 0.5),
                 run_count      = mc_p.get("run_count", 0),
             )
 
@@ -1679,6 +1804,61 @@ elif page == "🎲 Monte Carlo Sim":
                 pproj = pd.DataFrame(player_rows)
                 spc = ["Name", "Type"] + [c for c in MC_H_CATS + MC_P_CATS + ["wRC+","xwOBA","Barrel%","K%","xFIP"] if c in pproj.columns]
                 st.dataframe(pproj[spc].sort_values(["Type", "Name"]), use_container_width=True, hide_index=True)
+
+            # ── Sabermetric adjustments breakdown ─────────────
+            sw = mc_p.get("saber_weight", 0.5)
+            if sw > 0:
+                st.markdown("---")
+                with st.expander(f"🔬 Sabermetric Adjustments Applied (weight = {sw:.2f})", expanded=False):
+                    st.caption(
+                        "Shows how each player's projected means were nudged by sabermetric indicators. "
+                        "Positive delta = projection boosted. Negative = projection lowered."
+                    )
+                    saber_rows = []
+                    lg_h_disp = {s: bat_all[s].mean() for s in MC_H_STATS if s in bat_all.columns}
+                    lg_p_disp = {s: pit_all[s].mean() for s in MC_P_STATS if s in pit_all.columns}
+
+                    for name in list(mc_p["hitters"]) + list(mc_p["pitchers"]):
+                        is_h  = name in mc_p["hitters"]
+                        src   = bat_all if is_h else pit_all
+                        stats = MC_H_STATS if is_h else MC_P_STATS
+                        base  = _mc_player_dist(name, src, stats)
+                        adj   = _mc_apply_sabermetrics(name, dict(base), src, is_h, sw, lg_h_disp, lg_p_disp)
+                        cats  = ["HR","R","RBI","SB","AVG"] if is_h else ["W","ERA","WHIP","SO"]
+                        for cat in cats:
+                            if cat in base and cat in adj:
+                                bmu = base[cat][0]; amu = adj[cat][0]; delta = amu - bmu
+                                if abs(delta) > 0.001:
+                                    saber_rows.append({
+                                        "Player": name, "Type": "Hitter" if is_h else "Pitcher",
+                                        "Category": cat,
+                                        "Base Proj": round(bmu, 3),
+                                        "Saber Adj": round(amu, 3),
+                                        "Delta": round(delta, 3),
+                                        "Direction": "⬆️ Boost" if delta > 0 else "⬇️ Drag",
+                                    })
+                    if saber_rows:
+                        sdf3 = pd.DataFrame(saber_rows).sort_values(["Player","Category"])
+                        def _cdelta(val):
+                            try:
+                                v = float(val)
+                                if v > 0: return "color:#21C354; font-weight:bold"
+                                if v < 0: return "color:#FF4B4B; font-weight:bold"
+                            except: pass
+                            return ""
+                        st.dataframe(
+                            sdf3.style.map(_cdelta, subset=["Delta"]),
+                            use_container_width=True, hide_index=True)
+
+                        st.markdown("**What each indicator does:**")
+                        st.markdown(
+                            "**Hitters:** Barrel% → HR mean · wRC+ → R mean · wOBA → RBI mean · "
+                            "Spd → SB mean · (xwOBA−wOBA) + (xBA−AVG) → AVG mean\n\n"
+                            "**Pitchers:** xFIP/SIERA blend → ERA mean · K-BB% + GB% → WHIP mean · "
+                            "SwStr% → SO mean · K% + GB% → W mean"
+                        )
+                    else:
+                        st.info("No significant sabermetric adjustments for this roster — players are performing close to their true-talent indicators.")
 
         # ── Tab 2: Category Win Odds ───────────────────────────
         with tab_cat:
@@ -1768,7 +1948,8 @@ elif page == "🎲 Monte Carlo Sim":
                         alt_sims, _ = mc_run_simulation(
                             alt_h, alt_p, mc_p["n_sim"],
                             mc_p["injury_pct"], mc_p["regression_pull"],
-                            mc_p["platoon_boost"], run_count=mc_p.get("run_count", 0) + 77)
+                            mc_p["platoon_boost"], mc_p.get("saber_weight", 0.5),
+                            run_count=mc_p.get("run_count", 0) + 77)
 
                     st.markdown(f"#### Comparing: **{swap_out}** → **{swap_in}**")
                     comp_rows = []
@@ -1826,7 +2007,8 @@ elif page == "🎲 Monte Carlo Sim":
                         opp_sims, _ = mc_run_simulation(
                             tuple(opp_hitters), tuple(opp_pitchers), mc_p["n_sim"],
                             mc_p["injury_pct"], mc_p["regression_pull"],
-                            mc_p["platoon_boost"], run_count=mc_p.get("run_count", 0) + 55)
+                            mc_p["platoon_boost"], mc_p.get("saber_weight", 0.5),
+                            run_count=mc_p.get("run_count", 0) + 55)
 
                     h2h_rows = []; my_score = 0; opp_score = 0
                     for cat in MC_ALL_CATS:
