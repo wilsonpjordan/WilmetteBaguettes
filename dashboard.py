@@ -1339,6 +1339,8 @@ elif page == "🏟️ Draft Room":
 
 
 # ═════════════════════════════════════════════════════════════
+
+# ═════════════════════════════════════════════════════════════
 #  PAGE 8 — MONTE CARLO SIMULATION
 # ═════════════════════════════════════════════════════════════
 
@@ -1351,46 +1353,53 @@ elif page == "🎲 Monte Carlo Sim":
         "and stress-test alternative roster builds."
     )
 
-    # ── Constants ────────────────────────────────────────────
-    H_CATS       = ["HR","R","RBI","SB","AVG"]
-    P_CATS       = ["W","ERA","WHIP","SO"]
+    # ── Constants ─────────────────────────────────────────────
+    H_CATS       = ["HR", "R", "RBI", "SB", "AVG"]
+    P_CATS       = ["W", "ERA", "WHIP", "SO"]
     ALL_CATS_MC  = H_CATS + P_CATS
-    LOWER_BETTER = {"ERA","WHIP"}
-    COUNT_FLOORS = {"HR":0,"R":0,"RBI":0,"SB":0,"W":0,"SO":0}
+    LOWER_BETTER = {"ERA", "WHIP"}
+    COUNT_FLOORS = {"HR": 0, "R": 0, "RBI": 0, "SB": 0, "W": 0, "SO": 0}
     H_STATS      = ["HR","R","RBI","SB","AVG","OBP","SLG","wRC+","xwOBA","Barrel%","Hard%"]
     P_STATS      = ["W","ERA","WHIP","SO","K%","xFIP","SIERA","BB%","SwStr%","GB%"]
 
+    all_h_names_mc = sorted(bat_all["Name"].dropna().unique())
+    all_p_names_mc = sorted(pit_all["Name"].dropna().unique())
+
     # ── Helpers ───────────────────────────────────────────────
-    def _player_dist(name, all_df, stat_cols):
-        hist = all_df[all_df["Name"]==name][stat_cols].dropna(how="all")
-        result = {}
+    def _player_dist(name, src_df, stat_cols):
+        hist = src_df[src_df["Name"] == name][stat_cols].dropna(how="all")
+        out = {}
         for s in stat_cols:
             vals = hist[s].dropna()
             if len(vals) >= 2:
-                result[s] = (float(vals.mean()), float(vals.std()))
+                out[s] = (float(vals.mean()), float(vals.std()))
             elif len(vals) == 1:
-                v = float(vals.iloc[0]); result[s] = (v, abs(v)*0.15)
+                v = float(vals.iloc[0]); out[s] = (v, abs(v) * 0.15)
             else:
-                result[s] = (0.0, 0.0)
-        return result
+                out[s] = (0.0, 0.0)
+        return out
 
     def _sim_player(dist, n_sim, stat_cols, lower_clip=None):
-        lc = lower_clip or {}; data = {}
+        lc = lower_clip or {}
+        data = {}
         for s in stat_cols:
             mu, sd = dist.get(s, (0.0, 0.0))
-            draws  = np.random.normal(mu, max(sd,1e-6), n_sim)
-            if s in lc: draws = np.clip(draws, lc[s], None)
+            draws = np.random.normal(mu, max(sd, 1e-6), n_sim)
+            if s in lc:
+                draws = np.clip(draws, lc[s], None)
             data[s] = draws
         return pd.DataFrame(data)
 
-    # ── Core simulation ───────────────────────────────────────
-    @st.cache_data(show_spinner="🎲 Running simulations...", ttl=300)
-    def run_monte_carlo(hitters, pitchers, n_sim, injury_pct, regression_pull, platoon_boost, seed=42):
+    # ── Core Monte Carlo function ──────────────────────────────
+    @st.cache_data(show_spinner=False, ttl=600)
+    def run_monte_carlo(hitters, pitchers, n_sim, injury_pct,
+                        regression_pull, platoon_boost, seed=42):
         np.random.seed(seed)
         lg_h = {s: bat_all[s].mean() for s in H_STATS if s in bat_all.columns}
         lg_p = {s: pit_all[s].mean() for s in P_STATS if s in pit_all.columns}
 
-        def pull(mu, la, strength): return mu*(1-strength) + la*strength
+        def pull(mu, la, strength):
+            return mu * (1 - strength) + la * strength
 
         sim_h = {c: np.zeros(n_sim) for c in H_CATS}
         player_sims = {}
@@ -1401,20 +1410,20 @@ elif page == "🎲 Monte Carlo Sim":
                 if s in dist and s in lg_h:
                     mu, sd = dist[s]; dist[s] = (pull(mu, lg_h[s], regression_pull), sd)
             if platoon_boost and "Barrel%" in dist and "HR" in dist:
-                bmu, _  = dist["Barrel%"]; hmu, hsd = dist["HR"]
-                dist["HR"] = (hmu*1.10 if bmu>0.12 else hmu*0.92 if bmu<0.07 else hmu, hsd)
+                bmu, _ = dist["Barrel%"]; hmu, hsd = dist["HR"]
+                dist["HR"] = (hmu * 1.10 if bmu > 0.12 else hmu * 0.92 if bmu < 0.07 else hmu, hsd)
             sims = _sim_player(dist, n_sim, H_STATS, COUNT_FLOORS)
             imask = np.random.random(n_sim) < 0.30
-            red   = np.random.uniform(injury_pct*0.5, injury_pct*1.5, n_sim)
-            for s in ["HR","R","RBI","SB"]:
+            red   = np.random.uniform(injury_pct * 0.5, injury_pct * 1.5, n_sim)
+            for s in ["HR", "R", "RBI", "SB"]:
                 if s in sims.columns:
-                    sims[s] = np.clip(np.where(imask, sims[s]*(1-red), sims[s]), 0, None)
+                    sims[s] = np.clip(np.where(imask, sims[s] * (1 - red), sims[s]), 0, None)
             player_sims[name] = sims
-            for s in ["HR","R","RBI","SB"]:
+            for s in ["HR", "R", "RBI", "SB"]:
                 if s in sims.columns: sim_h[s] += sims[s].values
             if "AVG" in sims.columns: sim_h["AVG"] += sims["AVG"].values
 
-        n_h = max(len(hitters),1); sim_h["AVG"] /= n_h
+        n_h = max(len(hitters), 1); sim_h["AVG"] /= n_h
         sim_p = {c: np.zeros(n_sim) for c in P_CATS}
 
         for name in pitchers:
@@ -1424,285 +1433,378 @@ elif page == "🎲 Monte Carlo Sim":
                     mu, sd = dist[s]; dist[s] = (pull(mu, lg_p[s], regression_pull), sd)
             if platoon_boost and "SwStr%" in dist and "SO" in dist:
                 swmu, _ = dist["SwStr%"]; somu, sosd = dist["SO"]
-                dist["SO"] = (somu*1.08 if swmu>0.14 else somu*0.93 if swmu<0.09 else somu, sosd)
+                dist["SO"] = (somu * 1.08 if swmu > 0.14 else somu * 0.93 if swmu < 0.09 else somu, sosd)
             sims = _sim_player(dist, n_sim, P_STATS, COUNT_FLOORS)
             imask = np.random.random(n_sim) < 0.25
-            red   = np.random.uniform(injury_pct*0.5, injury_pct*1.5, n_sim)
-            for s in ["W","SO"]:
+            red   = np.random.uniform(injury_pct * 0.5, injury_pct * 1.5, n_sim)
+            for s in ["W", "SO"]:
                 if s in sims.columns:
-                    sims[s] = np.clip(np.where(imask, sims[s]*(1-red), sims[s]), 0, None)
+                    sims[s] = np.clip(np.where(imask, sims[s] * (1 - red), sims[s]), 0, None)
             player_sims[name] = sims
-            for s in ["W","SO"]:
+            for s in ["W", "SO"]:
                 if s in sims.columns: sim_p[s] += sims[s].values
-            for s in ["ERA","WHIP"]:
+            for s in ["ERA", "WHIP"]:
                 if s in sims.columns: sim_p[s] += sims[s].values
 
-        n_p = max(len(pitchers),1); sim_p["ERA"] /= n_p; sim_p["WHIP"] /= n_p
+        n_p = max(len(pitchers), 1); sim_p["ERA"] /= n_p; sim_p["WHIP"] /= n_p
 
         team_df = pd.DataFrame({
-            "HR":sim_h["HR"],"R":sim_h["R"],"RBI":sim_h["RBI"],"SB":sim_h["SB"],"AVG":sim_h["AVG"],
-            "W":sim_p["W"],"ERA":sim_p["ERA"],"WHIP":sim_p["WHIP"],"SO":sim_p["SO"],
+            "HR": sim_h["HR"], "R": sim_h["R"], "RBI": sim_h["RBI"],
+            "SB": sim_h["SB"], "AVG": sim_h["AVG"],
+            "W": sim_p["W"], "ERA": sim_p["ERA"], "WHIP": sim_p["WHIP"], "SO": sim_p["SO"],
         })
         return team_df, player_sims
 
-    @st.cache_data(ttl=300)
+    @st.cache_data(ttl=600)
     def _opponent_pool(n_teams, n_sim, seed=99):
         np.random.seed(seed)
         all_h = bat_all["Name"].dropna().unique().tolist()
         all_p = pit_all["Name"].dropna().unique().tolist()
-        opp_cat = {c:[] for c in ALL_CATS_MC}
+        opp_cat = {c: [] for c in ALL_CATS_MC}
         for i in range(n_teams):
-            hs = list(np.random.choice(all_h, size=min(9,len(all_h)), replace=False))
-            ps = list(np.random.choice(all_p, size=min(7,len(all_p)), replace=False))
-            odf, _ = run_monte_carlo(hs, ps, n_sim, 0.15, 0.3, True, seed=seed+i)
+            hs = list(np.random.choice(all_h, size=min(9, len(all_h)), replace=False))
+            ps = list(np.random.choice(all_p, size=min(7, len(all_p)), replace=False))
+            odf, _ = run_monte_carlo(tuple(hs), tuple(ps), n_sim, 0.15, 0.3, True, seed=seed + i)
             for c in ALL_CATS_MC:
                 if c in odf.columns: opp_cat[c].append(odf[c].values)
-        return {c:np.array(v) for c,v in opp_cat.items() if v}
+        return {c: np.array(v) for c, v in opp_cat.items() if v}
 
-    # ── Tabs ─────────────────────────────────────────────────
-    tab_setup, tab_results, tab_cat, tab_alt, tab_opp = st.tabs([
-        "⚙️ Setup","📈 Season Projections","🏆 Category Win Odds","🔀 Roster Alternatives","👥 vs. Opponent Sims"
+    # ── Setup controls (always visible above tabs) ─────────────
+    st.markdown("### ⚙️ Setup")
+    col_a, col_b = st.columns(2)
+    n_sim_val       = col_a.select_slider("Number of simulations",
+        options=[500, 1_000, 2_500, 5_000, 10_000], value=2_500)
+    league_size_mc  = col_b.slider("League size", 8, 16, 12, key="mc_league")
+
+    pre_h = list(st.session_state.get("my_h", []))
+    pre_p = list(st.session_state.get("my_p", []))
+    mc_hitters  = st.multiselect("My Hitters (up to 14)", options=all_h_names_mc,
+        default=[h for h in pre_h if h in all_h_names_mc], max_selections=14, key="mc_hitters")
+    mc_pitchers = st.multiselect("My Pitchers (up to 10)", options=all_p_names_mc,
+        default=[p for p in pre_p if p in all_p_names_mc], max_selections=10, key="mc_pitchers")
+
+    adv1, adv2, adv3 = st.columns(3)
+    injury_pct_val   = adv1.slider("Injury / games-lost risk (%)", 0, 40, 15,
+        help="Each sim randomly reduces counting stats for ~30% of sims.")
+    regr_pull_val    = adv2.slider("Mean-reversion strength", 0.0, 1.0, 0.3, 0.05,
+        help="0 = raw historical mean. 1 = fully regress to league average.")
+    platoon_val      = adv3.checkbox("Apply Barrel%/SwStr% quality multiplier", value=True)
+
+    run_clicked = st.button(
+        "▶️ Run Monte Carlo Simulation", type="primary",
+        disabled=(len(mc_hitters) == 0 and len(mc_pitchers) == 0),
+    )
+
+    # Save params and trigger flag on button click
+    if run_clicked:
+        st.session_state["mc_params"] = {
+            "n_sim": n_sim_val,
+            "league_size": league_size_mc,
+            "hitters": tuple(mc_hitters),
+            "pitchers": tuple(mc_pitchers),
+            "injury_pct": injury_pct_val / 100,
+            "regression_pull": regr_pull_val,
+            "platoon_boost": platoon_val,
+        }
+
+    st.markdown("---")
+
+    # ── Results tabs (always rendered; content conditional on params) ──
+    tab_results, tab_cat, tab_alt, tab_opp = st.tabs([
+        "📈 Season Projections",
+        "🏆 Category Win Odds",
+        "🔀 Roster Alternatives",
+        "👥 vs. Opponent Sims",
     ])
 
-    with tab_setup:
-        st.markdown("### ⚙️ Simulation Setup")
-        col_a, col_b = st.columns(2)
-        n_sim = col_a.select_slider("Number of simulations", options=[500,1_000,2_500,5_000,10_000], value=2_500,
-            help="More sims = narrower confidence intervals but slower runtime.")
-        league_size_mc = col_b.slider("League size", 8, 16, 12, key="mc_league")
-        st.markdown("---"); st.markdown("#### 🏃 Build Your Roster")
-        pre_h = list(st.session_state.get("my_h",[])); pre_p = list(st.session_state.get("my_p",[]))
-        all_h_names = sorted(bat_all["Name"].dropna().unique())
-        all_p_names = sorted(pit_all["Name"].dropna().unique())
-        mc_hitters  = st.multiselect("My Hitters (up to 14)", options=all_h_names,
-            default=[h for h in pre_h if h in all_h_names], max_selections=14, key="mc_hitters")
-        mc_pitchers = st.multiselect("My Pitchers (up to 10)", options=all_p_names,
-            default=[p for p in pre_p if p in all_p_names], max_selections=10, key="mc_pitchers")
-        st.markdown("---"); st.markdown("#### ⚙️ Advanced Options")
-        adv1, adv2, adv3 = st.columns(3)
-        injury_pct      = adv1.slider("Injury / games-lost risk (%)", 0, 40, 15,
-            help="Each sim independently reduces a player's counting stats by this % with 30% probability.")
-        regression_pull = adv2.slider("Mean-reversion strength", 0.0, 1.0, 0.3, 0.05,
-            help="0 = use raw historical mean. 1 = fully pull toward league average.")
-        platoon_boost   = adv3.checkbox("Apply Barrel%/SwStr% quality multiplier", value=True,
-            help="Adjusts HR/SO upward for elite barrel/swing-miss profiles.")
-        st.markdown("---")
-        run_sim = st.button("▶️ Run Monte Carlo Simulation", type="primary",
-            disabled=(len(mc_hitters)==0 and len(mc_pitchers)==0))
-        if run_sim:
-            st.session_state["mc_run"] = True
-            st.session_state["mc_params"] = {
-                "n_sim":n_sim,"league_size":league_size_mc,"hitters":mc_hitters,"pitchers":mc_pitchers,
-                "injury_pct":injury_pct/100,"regression_pull":regression_pull,"platoon_boost":platoon_boost,
-            }
-        if not st.session_state.get("mc_run"):
-            st.info("👆 Select your roster and click **Run Monte Carlo Simulation** to begin.")
+    mc_p = st.session_state.get("mc_params")
 
-    if st.session_state.get("mc_run") and st.session_state.get("mc_params"):
-        p = st.session_state["mc_params"]
-        with st.spinner("🎲 Running simulations..."):
+    if mc_p is None:
+        for t in [tab_results, tab_cat, tab_alt, tab_opp]:
+            with t:
+                st.info("👆 Select your roster above and click **▶️ Run Monte Carlo Simulation** to begin.")
+    else:
+        # Run (cached) simulation
+        with st.spinner("🎲 Running simulations — this may take a few seconds..."):
             team_sims, player_sims = run_monte_carlo(
-                hitters=p["hitters"], pitchers=p["pitchers"], n_sim=p["n_sim"],
-                injury_pct=p["injury_pct"], regression_pull=p["regression_pull"],
-                platoon_boost=p["platoon_boost"])
-        all_h_names_mc = sorted(bat_all["Name"].dropna().unique())
-        all_p_names_mc = sorted(pit_all["Name"].dropna().unique())
+                hitters        = mc_p["hitters"],
+                pitchers       = mc_p["pitchers"],
+                n_sim          = mc_p["n_sim"],
+                injury_pct     = mc_p["injury_pct"],
+                regression_pull= mc_p["regression_pull"],
+                platoon_boost  = mc_p["platoon_boost"],
+            )
 
-        # ── Tab: Season Projections ───────────────────────────
+        # ── Tab 1: Season Projections ──────────────────────────
         with tab_results:
-            st.markdown(f"### 📈 Team Season Projections  ({p['n_sim']:,} simulations)")
+            st.markdown(f"### 📈 Team Season Projections  ({mc_p['n_sim']:,} simulations)")
+            st.caption(f"Roster: {', '.join(mc_p['hitters'])} | {', '.join(mc_p['pitchers'])}")
             summary_rows = []
             for cat in ALL_CATS_MC:
                 if cat not in team_sims.columns: continue
                 vals = team_sims[cat].dropna()
-                p10,p25,p50,p75,p90 = np.percentile(vals,[10,25,50,75,90])
+                p10, p25, p50, p75, p90 = np.percentile(vals, [10, 25, 50, 75, 90])
+                cv = round(float(vals.std() / abs(vals.mean()) * 100), 1) if vals.mean() != 0 else 0
                 summary_rows.append({
-                    "Category":cat,"Type":"Lower=Better" if cat in LOWER_BETTER else "Higher=Better",
-                    "10th %ile":round(p10,2),"25th %ile":round(p25,2),"Median":round(p50,2),
-                    "75th %ile":round(p75,2),"90th %ile":round(p90,2),
-                    "Std Dev":round(float(vals.std()),2),
-                    "CV%":round(float(vals.std()/abs(vals.mean())*100),1) if vals.mean()!=0 else 0,
+                    "Category": cat,
+                    "Type": "Lower=Better" if cat in LOWER_BETTER else "Higher=Better",
+                    "10th %ile": round(p10, 2), "25th %ile": round(p25, 2),
+                    "Median": round(p50, 2),
+                    "75th %ile": round(p75, 2), "90th %ile": round(p90, 2),
+                    "Std Dev": round(float(vals.std()), 2), "CV%": cv,
                 })
             sdf = pd.DataFrame(summary_rows)
             def _color_type(val):
-                return "color:#4fc3f7" if val=="Higher=Better" else "color:#FFA500"
-            st.dataframe(sdf.style.map(_color_type,subset=["Type"]).background_gradient(subset=["Std Dev"],cmap="YlOrRd").format({"CV%":"{:.1f}%"}), use_container_width=True, hide_index=True)
-            st.caption("**CV%** = volatility. High CV% means this category is especially unpredictable for your roster.")
-            st.markdown("---"); st.markdown("#### 📊 Category Distribution Plots")
+                return "color:#4fc3f7" if val == "Higher=Better" else "color:#FFA500"
+            st.dataframe(
+                sdf.style
+                    .map(_color_type, subset=["Type"])
+                    .background_gradient(subset=["Std Dev"], cmap="YlOrRd")
+                    .format({"CV%": "{:.1f}%"}),
+                use_container_width=True, hide_index=True)
+            st.caption("**CV%** = volatility. High CV% = this category is especially unpredictable for your roster.")
+
+            st.markdown("---")
+            st.markdown("#### 📊 Category Distribution Plots")
             cat_grid = st.columns(3)
             for i, cat in enumerate(ALL_CATS_MC):
                 if cat not in team_sims.columns: continue
-                vals = team_sims[cat].values; p10v, p90v = np.percentile(vals,[10,90])
-                with cat_grid[i%3]:
+                vals = team_sims[cat].values
+                p10v, p90v = np.percentile(vals, [10, 90])
+                with cat_grid[i % 3]:
                     fig = go.Figure()
                     fig.add_trace(go.Histogram(x=vals, nbinsx=40, marker_color="#4fc3f7", showlegend=False))
-                    fig.add_vline(x=np.median(vals), line_dash="dash", line_color="yellow",
+                    fig.add_vline(x=float(np.median(vals)), line_dash="dash", line_color="yellow",
                         annotation_text="Median", annotation_position="top right")
-                    fig.add_vrect(x0=p10v, x1=p90v, fillcolor="rgba(79,195,247,0.08)", line_width=0,
+                    fig.add_vrect(x0=float(p10v), x1=float(p90v),
+                        fillcolor="rgba(79,195,247,0.08)", line_width=0,
                         annotation_text="P10–P90", annotation_position="top left")
                     fig.update_layout(title=cat, template="plotly_dark", height=220,
-                        margin=dict(l=8,r=8,t=36,b=8), xaxis_title=None, yaxis_title=None)
+                        margin=dict(l=8, r=8, t=36, b=8))
                     st.plotly_chart(fig, use_container_width=True)
-            st.markdown("---"); st.markdown("#### 👤 Per-Player Median Projections")
+
+            st.markdown("---")
+            st.markdown("#### 👤 Per-Player Median Projections")
             player_rows = []
             for name, sdf2 in player_sims.items():
-                row = {"Name":name,"Type":"Hitter" if name in p["hitters"] else "Pitcher"}
-                for col in sdf2.columns: row[col] = round(float(sdf2[col].median()),3)
+                row = {"Name": name, "Type": "Hitter" if name in mc_p["hitters"] else "Pitcher"}
+                for col in sdf2.columns:
+                    row[col] = round(float(sdf2[col].median()), 3)
                 player_rows.append(row)
             if player_rows:
                 pproj = pd.DataFrame(player_rows)
-                spc = ["Name","Type"]+[c for c in H_CATS+P_CATS+["wRC+","xwOBA","Barrel%","K%","xFIP"] if c in pproj.columns]
-                st.dataframe(pproj[spc].sort_values(["Type","Name"]), use_container_width=True, hide_index=True)
+                spc = ["Name", "Type"] + [c for c in H_CATS + P_CATS + ["wRC+","xwOBA","Barrel%","K%","xFIP"] if c in pproj.columns]
+                st.dataframe(pproj[spc].sort_values(["Type", "Name"]), use_container_width=True, hide_index=True)
 
-        # ── Tab: Category Win Odds ────────────────────────────
+        # ── Tab 2: Category Win Odds ───────────────────────────
         with tab_cat:
             st.markdown("### 🏆 Category Win Probability")
-            st.caption("Estimated probability your team wins each category head-to-head against a randomly assembled opponent.")
-            with st.spinner("🔄 Simulating opponent pool..."):
-                opp_pool = _opponent_pool(p["league_size"]-1, min(p["n_sim"],1000))
+            st.caption("Win% against randomly assembled opponents drawn from the full player pool.")
+            with st.spinner("Simulating opponent pool..."):
+                opp_pool = _opponent_pool(mc_p["league_size"] - 1, min(mc_p["n_sim"], 1000))
             win_pct_rows = []
             for cat in ALL_CATS_MC:
                 if cat not in team_sims.columns or cat not in opp_pool: continue
-                my_vals = team_sims[cat].values[:len(opp_pool[cat][0])]
+                my_v = team_sims[cat].values[:len(opp_pool[cat][0])]
                 wins_per_opp = []
                 for opp in opp_pool[cat]:
-                    n = min(len(my_vals),len(opp))
-                    wins_per_opp.append(np.mean(my_vals[:n]<opp[:n]) if cat in LOWER_BETTER else np.mean(my_vals[:n]>opp[:n]))
+                    n = min(len(my_v), len(opp))
+                    wins_per_opp.append(
+                        np.mean(my_v[:n] < opp[:n]) if cat in LOWER_BETTER
+                        else np.mean(my_v[:n] > opp[:n])
+                    )
                 awp = float(np.mean(wins_per_opp))
-                med_me  = float(np.median(my_vals))
+                med_me  = float(np.median(my_v))
                 med_opp = float(np.median(np.concatenate(opp_pool[cat])))
-                strength = ("💪 Dominant" if awp>=0.65 else "✅ Solid" if awp>=0.52 else
-                            "⚖️ Toss-up" if awp>=0.46 else "⚠️ Weak" if awp>=0.35 else "🚨 Punt")
-                win_pct_rows.append({"Category":cat,"Win%":round(awp*100,1),"My Median":round(med_me,2),
-                    "Opp Median":round(med_opp,2),"Edge":round(med_me-med_opp,2),"Assessment":strength})
-            win_df = pd.DataFrame(win_pct_rows).sort_values("Win%",ascending=False)
+                strength = ("💪 Dominant" if awp >= 0.65 else "✅ Solid" if awp >= 0.52 else
+                            "⚖️ Toss-up" if awp >= 0.46 else "⚠️ Weak"  if awp >= 0.35 else "🚨 Punt")
+                win_pct_rows.append({
+                    "Category": cat, "Win%": round(awp * 100, 1),
+                    "My Median": round(med_me, 2), "Opp Median": round(med_opp, 2),
+                    "Edge": round(med_me - med_opp, 2), "Assessment": strength,
+                })
+            win_df = pd.DataFrame(win_pct_rows).sort_values("Win%", ascending=False)
             def _color_win(val):
                 try:
-                    v=float(val)
-                    if v>=65: return "color:#21C354; font-weight:bold"
-                    if v>=52: return "color:#21C354"
-                    if v>=46: return "color:#FFA500"
-                    if v>=35: return "color:#FF4B4B"
+                    v = float(val)
+                    if v >= 65: return "color:#21C354; font-weight:bold"
+                    if v >= 52: return "color:#21C354"
+                    if v >= 46: return "color:#FFA500"
+                    if v >= 35: return "color:#FF4B4B"
                     return "color:#FF4B4B; font-weight:bold"
                 except: return ""
-            st.dataframe(win_df.style.map(_color_win,subset=["Win%"]).format({"Win%":"{:.1f}%"}), use_container_width=True, hide_index=True)
-            st.markdown("---"); st.markdown("#### 🕸️ Category Win% Radar")
-            cats_r = win_df["Category"].tolist(); probs_r = win_df["Win%"].tolist()
-            fig_r2 = go.Figure()
-            fig_r2.add_trace(go.Scatterpolar(r=probs_r+[probs_r[0]], theta=cats_r+[cats_r[0]],
-                fill="toself", line_color="#4fc3f7", fillcolor="rgba(79,195,247,0.15)", name="Win%"))
-            fig_r2.add_trace(go.Scatterpolar(r=[50]*(len(cats_r)+1), theta=cats_r+[cats_r[0]],
-                mode="lines", line=dict(dash="dash",color="gray",width=1), name="50% baseline"))
-            fig_r2.update_layout(polar=dict(radialaxis=dict(range=[0,100],ticksuffix="%",tickfont_size=9)),
-                template="plotly_dark", height=420, legend=dict(orientation="h",y=-0.1), margin=dict(l=40,r=40,t=40,b=60))
-            st.plotly_chart(fig_r2, use_container_width=True)
-            exp_wins = sum(r["Win%"]/100 for _,r in win_df.iterrows())
-            st.metric("📊 Expected Category Wins per matchup", f"{exp_wins:.2f} / 9",
-                f"{'above' if exp_wins>4.5 else 'below'} .500")
+            st.dataframe(
+                win_df.style.map(_color_win, subset=["Win%"]).format({"Win%": "{:.1f}%"}),
+                use_container_width=True, hide_index=True)
 
-        # ── Tab: Roster Alternatives ──────────────────────────
+            st.markdown("---")
+            st.markdown("#### 🕸️ Category Win% Radar")
+            cats_r = win_df["Category"].tolist(); probs_r = win_df["Win%"].tolist()
+            fig_radar = go.Figure()
+            fig_radar.add_trace(go.Scatterpolar(
+                r=probs_r + [probs_r[0]], theta=cats_r + [cats_r[0]],
+                fill="toself", line_color="#4fc3f7",
+                fillcolor="rgba(79,195,247,0.15)", name="Win%"))
+            fig_radar.add_trace(go.Scatterpolar(
+                r=[50] * (len(cats_r) + 1), theta=cats_r + [cats_r[0]],
+                mode="lines", line=dict(dash="dash", color="gray", width=1), name="50% line"))
+            fig_radar.update_layout(
+                polar=dict(radialaxis=dict(range=[0, 100], ticksuffix="%", tickfont_size=9)),
+                template="plotly_dark", height=420,
+                legend=dict(orientation="h", y=-0.1), margin=dict(l=40,r=40,t=40,b=60))
+            st.plotly_chart(fig_radar, use_container_width=True)
+
+            exp_wins = sum(r["Win%"] / 100 for _, r in win_df.iterrows())
+            st.metric("📊 Expected Category Wins per matchup", f"{exp_wins:.2f} / 9",
+                f"{'above' if exp_wins > 4.5 else 'below'} .500")
+
+        # ── Tab 3: Roster Alternatives ─────────────────────────
         with tab_alt:
             st.markdown("### 🔀 Roster Alternative Comparison")
-            st.caption("Swap one player on your roster for an alternative and see how your category distributions change.")
-            all_current = list(p["hitters"]) + list(p["pitchers"])
+            st.caption("Swap one player and see how category distributions shift.")
+            all_current = list(mc_p["hitters"]) + list(mc_p["pitchers"])
             if not all_current:
-                st.info("Add players on the Setup tab first.")
+                st.info("Add players in the Setup section above first.")
             else:
-                swap_out = st.selectbox("Player to replace", all_current, key="swap_out")
-                is_h_swap = swap_out in p["hitters"]
-                remaining = [n for n in (all_h_names_mc if is_h_swap else all_p_names_mc)
-                             if n not in (p["hitters"] if is_h_swap else p["pitchers"])]
-                swap_in = st.selectbox("Replace with", remaining, key="swap_in")
+                swap_out   = st.selectbox("Player to replace", all_current, key="swap_out")
+                is_h_swap  = swap_out in mc_p["hitters"]
+                taken      = set(mc_p["hitters"] if is_h_swap else mc_p["pitchers"])
+                pool       = [n for n in (all_h_names_mc if is_h_swap else all_p_names_mc) if n not in taken]
+                swap_in    = st.selectbox("Replace with", pool, key="swap_in")
+
                 if st.button("🔄 Compare Rosters", key="btn_compare"):
                     if is_h_swap:
-                        alt_h = [h if h!=swap_out else swap_in for h in p["hitters"]]; alt_p = p["pitchers"]
+                        alt_h = tuple(h if h != swap_out else swap_in for h in mc_p["hitters"])
+                        alt_p = mc_p["pitchers"]
                     else:
-                        alt_h = p["hitters"]; alt_p = [pp if pp!=swap_out else swap_in for pp in p["pitchers"]]
+                        alt_h = mc_p["hitters"]
+                        alt_p = tuple(pp if pp != swap_out else swap_in for pp in mc_p["pitchers"])
+
                     with st.spinner("Running alternative simulation..."):
-                        alt_sims, _ = run_monte_carlo(alt_h, alt_p, p["n_sim"], p["injury_pct"],
-                            p["regression_pull"], p["platoon_boost"], seed=77)
+                        alt_sims, _ = run_monte_carlo(
+                            alt_h, alt_p, mc_p["n_sim"],
+                            mc_p["injury_pct"], mc_p["regression_pull"],
+                            mc_p["platoon_boost"], seed=77)
+
                     st.markdown(f"#### Comparing: **{swap_out}** → **{swap_in}**")
                     comp_rows = []
                     for cat in ALL_CATS_MC:
                         if cat not in team_sims.columns or cat not in alt_sims.columns: continue
-                        bm = float(np.median(team_sims[cat])); am = float(np.median(alt_sims[cat])); delta = am-bm
-                        direction = ("✅ Better" if (delta<-0.01 if cat in LOWER_BETTER else delta>0.01) else
-                                     "❌ Worse"  if (delta>0.01  if cat in LOWER_BETTER else delta<-0.01) else "➡️ Similar")
-                        comp_rows.append({"Category":cat,f"Base ({swap_out}) Median":round(bm,2),
-                            f"Alt ({swap_in}) Median":round(am,2),"Delta":round(delta,2),"Impact":direction})
+                        bm = float(np.median(team_sims[cat]))
+                        am = float(np.median(alt_sims[cat]))
+                        delta = am - bm
+                        if cat in LOWER_BETTER:
+                            direction = "✅ Better" if delta < -0.01 else "❌ Worse" if delta > 0.01 else "➡️ Similar"
+                        else:
+                            direction = "✅ Better" if delta >  0.01 else "❌ Worse" if delta < -0.01 else "➡️ Similar"
+                        comp_rows.append({
+                            "Category": cat,
+                            f"Base ({swap_out})": round(bm, 2),
+                            f"Alt ({swap_in})":   round(am, 2),
+                            "Delta": round(delta, 2),
+                            "Impact": direction,
+                        })
                     comp_df = pd.DataFrame(comp_rows)
                     def _ci(val):
                         if "Better" in str(val): return "color:#21C354; font-weight:bold"
                         if "Worse"  in str(val): return "color:#FF4B4B; font-weight:bold"
                         return "color:#aaa"
-                    st.dataframe(comp_df.style.map(_ci,subset=["Impact"]), use_container_width=True, hide_index=True)
-                    imp_cat = comp_df.reindex(comp_df["Delta"].abs().sort_values(ascending=False).index).iloc[0]["Category"]
+                    st.dataframe(comp_df.style.map(_ci, subset=["Impact"]),
+                        use_container_width=True, hide_index=True)
+
+                    imp_cat = comp_df.reindex(
+                        comp_df["Delta"].abs().sort_values(ascending=False).index
+                    ).iloc[0]["Category"]
                     st.markdown(f"#### Distribution shift — most impacted: **{imp_cat}**")
                     fig_ov = go.Figure()
-                    fig_ov.add_trace(go.Histogram(x=team_sims[imp_cat], nbinsx=40, name=f"Base ({swap_out})", opacity=0.65, marker_color="#4fc3f7"))
-                    fig_ov.add_trace(go.Histogram(x=alt_sims[imp_cat],  nbinsx=40, name=f"Alt ({swap_in})",  opacity=0.65, marker_color="#FF7043"))
+                    fig_ov.add_trace(go.Histogram(x=team_sims[imp_cat], nbinsx=40,
+                        name=f"Base ({swap_out})", opacity=0.65, marker_color="#4fc3f7"))
+                    fig_ov.add_trace(go.Histogram(x=alt_sims[imp_cat],  nbinsx=40,
+                        name=f"Alt ({swap_in})",  opacity=0.65, marker_color="#FF7043"))
                     fig_ov.update_layout(barmode="overlay", template="plotly_dark", height=320,
-                        legend=dict(orientation="h",y=1.1), xaxis_title=imp_cat)
+                        legend=dict(orientation="h", y=1.1), xaxis_title=imp_cat)
                     st.plotly_chart(fig_ov, use_container_width=True)
 
-        # ── Tab: vs. Opponent Sims ────────────────────────────
+        # ── Tab 4: vs. Opponent Sims ───────────────────────────
         with tab_opp:
             st.markdown("### 👥 Head-to-Head Matchup Simulator")
-            st.caption("Simulate a full matchup week against a specific opponent roster.")
-            st.markdown("#### Build Opponent's Roster")
-            opp_hitters  = st.multiselect("Opponent's Hitters",
-                options=[n for n in all_h_names_mc if n not in p["hitters"]], max_selections=14, key="opp_hitters")
-            opp_pitchers = st.multiselect("Opponent's Pitchers",
-                options=[n for n in all_p_names_mc if n not in p["pitchers"]], max_selections=10, key="opp_pitchers")
+            st.caption("Build a specific opponent's roster and simulate the matchup.")
+            opp_h_opts = [n for n in all_h_names_mc if n not in mc_p["hitters"]]
+            opp_p_opts = [n for n in all_p_names_mc if n not in mc_p["pitchers"]]
+            opp_hitters  = st.multiselect("Opponent's Hitters",  options=opp_h_opts, max_selections=14, key="opp_hitters")
+            opp_pitchers = st.multiselect("Opponent's Pitchers", options=opp_p_opts, max_selections=10, key="opp_pitchers")
+
             if st.button("⚔️ Simulate Matchup", key="btn_matchup"):
                 if not opp_hitters and not opp_pitchers:
                     st.warning("Add at least one opponent player.")
                 else:
                     with st.spinner("Simulating matchup..."):
-                        opp_sims, _ = run_monte_carlo(opp_hitters, opp_pitchers, p["n_sim"],
-                            p["injury_pct"], p["regression_pull"], p["platoon_boost"], seed=55)
-                    st.markdown("#### ⚔️ Head-to-Head Results")
+                        opp_sims, _ = run_monte_carlo(
+                            tuple(opp_hitters), tuple(opp_pitchers), mc_p["n_sim"],
+                            mc_p["injury_pct"], mc_p["regression_pull"],
+                            mc_p["platoon_boost"], seed=55)
+
                     h2h_rows = []; my_score = 0; opp_score = 0
                     for cat in ALL_CATS_MC:
                         if cat not in team_sims.columns or cat not in opp_sims.columns: continue
                         n = min(len(team_sims), len(opp_sims))
-                        my_v  = team_sims[cat].values[:n]; opp_v = opp_sims[cat].values[:n]
-                        wp = float(np.mean(my_v<opp_v) if cat in LOWER_BETTER else np.mean(my_v>opp_v))*100
-                        exp = "Win" if wp>=55 else "Loss" if wp<=45 else "Toss-up"
-                        if exp=="Win": my_score+=1
-                        elif exp=="Loss": opp_score+=1
-                        h2h_rows.append({"Category":cat,"My Median":round(float(np.median(my_v)),2),
-                            "Opp Median":round(float(np.median(opp_v)),2),"Win Prob":round(wp,1),"Expected":exp})
+                        my_v  = team_sims[cat].values[:n]
+                        opp_v = opp_sims[cat].values[:n]
+                        wp = float(np.mean(my_v < opp_v) if cat in LOWER_BETTER else np.mean(my_v > opp_v)) * 100
+                        exp = "Win" if wp >= 55 else "Loss" if wp <= 45 else "Toss-up"
+                        if exp == "Win":  my_score  += 1
+                        elif exp == "Loss": opp_score += 1
+                        h2h_rows.append({
+                            "Category": cat,
+                            "My Median":  round(float(np.median(my_v)),  2),
+                            "Opp Median": round(float(np.median(opp_v)), 2),
+                            "Win Prob": round(wp, 1),
+                            "Expected": exp,
+                        })
+
                     h2h_df = pd.DataFrame(h2h_rows)
                     def _ch2h(val):
-                        if val=="Win":     return "color:#21C354; font-weight:bold"
-                        if val=="Loss":    return "color:#FF4B4B; font-weight:bold"
+                        if val == "Win":     return "color:#21C354; font-weight:bold"
+                        if val == "Loss":    return "color:#FF4B4B; font-weight:bold"
                         return "color:#FFA500"
                     def _cwp(val):
                         try:
-                            v=float(val)
-                            if v>=60: return "color:#21C354; font-weight:bold"
-                            if v<=40: return "color:#FF4B4B; font-weight:bold"
+                            v = float(val)
+                            if v >= 60: return "color:#21C354; font-weight:bold"
+                            if v <= 40: return "color:#FF4B4B; font-weight:bold"
                         except: pass
                         return ""
-                    st.dataframe(h2h_df.style.map(_ch2h,subset=["Expected"]).map(_cwp,subset=["Win Prob"]).format({"Win Prob":"{:.1f}%"}), use_container_width=True, hide_index=True)
-                    ties = 9-my_score-opp_score
-                    mc1,mc2,mc3 = st.columns(3)
-                    mc1.metric("My Expected Cats",my_score); mc2.metric("Toss-ups",ties); mc3.metric("Opp Expected Cats",opp_score)
-                    result_label = ("🏆 Projected WIN" if my_score>opp_score else "⚔️ Projected SPLIT" if my_score==opp_score else "💀 Projected LOSS")
-                    result_color = "#21C354" if my_score>opp_score else "#FFA500" if my_score==opp_score else "#FF4B4B"
-                    st.markdown(f"<h2 style='color:{result_color};text-align:center'>{result_label}</h2>", unsafe_allow_html=True)
-                    fig_h2h = go.Figure()
-                    fig_h2h.add_trace(go.Bar(x=h2h_df["Category"], y=h2h_df["Win Prob"],
-                        marker_color=["#21C354" if v>=55 else "#FF4B4B" if v<=45 else "#FFA500" for v in h2h_df["Win Prob"]],
-                        text=[f"{v:.0f}%" for v in h2h_df["Win Prob"]], textposition="outside"))
-                    fig_h2h.add_hline(y=50, line_dash="dash", line_color="white", opacity=0.5, annotation_text="50% line")
-                    fig_h2h.update_layout(template="plotly_dark", height=380,
-                        yaxis=dict(range=[0,110],title="Win Probability (%)"), xaxis_title="Category",
-                        showlegend=False, margin=dict(t=20))
-                    st.plotly_chart(fig_h2h, use_container_width=True)
+                    st.dataframe(
+                        h2h_df.style
+                            .map(_ch2h, subset=["Expected"])
+                            .map(_cwp,  subset=["Win Prob"])
+                            .format({"Win Prob": "{:.1f}%"}),
+                        use_container_width=True, hide_index=True)
 
-    else:
-        for t in [tab_results, tab_cat, tab_alt, tab_opp]:
-            with t:
-                st.info("🎲 Run the simulation from the **Setup** tab first.")
+                    ties = 9 - my_score - opp_score
+                    mc1, mc2, mc3 = st.columns(3)
+                    mc1.metric("My Expected Cats",  my_score)
+                    mc2.metric("Toss-ups",           ties)
+                    mc3.metric("Opp Expected Cats",  opp_score)
+
+                    result_label = ("🏆 Projected WIN"   if my_score > opp_score else
+                                    "⚔️ Projected SPLIT" if my_score == opp_score else
+                                    "💀 Projected LOSS")
+                    result_color = ("#21C354" if my_score > opp_score else
+                                    "#FFA500" if my_score == opp_score else "#FF4B4B")
+                    st.markdown(f"<h2 style='color:{result_color};text-align:center'>{result_label}</h2>",
+                        unsafe_allow_html=True)
+
+                    fig_h2h = go.Figure()
+                    fig_h2h.add_trace(go.Bar(
+                        x=h2h_df["Category"], y=h2h_df["Win Prob"],
+                        marker_color=["#21C354" if v >= 55 else "#FF4B4B" if v <= 45 else "#FFA500"
+                                      for v in h2h_df["Win Prob"]],
+                        text=[f"{v:.0f}%" for v in h2h_df["Win Prob"]],
+                        textposition="outside"))
+                    fig_h2h.add_hline(y=50, line_dash="dash", line_color="white",
+                        opacity=0.5, annotation_text="50% line")
+                    fig_h2h.update_layout(template="plotly_dark", height=380,
+                        yaxis=dict(range=[0, 110], title="Win Probability (%)"),
+                        xaxis_title="Category", showlegend=False, margin=dict(t=20))
+                    st.plotly_chart(fig_h2h, use_container_width=True)
