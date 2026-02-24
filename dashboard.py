@@ -2233,15 +2233,20 @@ elif page == "🎲 Monte Carlo Sim":
 
                 cats_ss = [c for c in MC_ALL_CATS if c in team_sims.columns]
 
-                # Trim/expand team_sims to exactly N_SIM rows to avoid shape mismatches
-                if len(team_sims) != N_SIM:
-                    if len(team_sims) > N_SIM:
-                        team_sims_ss = team_sims.iloc[:N_SIM].reset_index(drop=True)
-                    else:
-                        # Resample with replacement to reach N_SIM
-                        team_sims_ss = team_sims.sample(n=N_SIM, replace=True, random_state=42).reset_index(drop=True)
-                else:
-                    team_sims_ss = team_sims
+                # Always re-run team simulation at this season sim's N_SIM
+                # so roster changes and slider changes are always reflected.
+                # Use a unique run_count that includes N_SIM so cache busts correctly.
+                with st.spinner("Running your team sim..."):
+                    team_sims_ss, _ = mc_run_simulation(
+                        hitters         = mc_p["hitters"],
+                        pitchers        = mc_p["pitchers"],
+                        n_sim           = N_SIM,
+                        injury_pct      = mc_p["injury_pct"],
+                        regression_pull = mc_p["regression_pull"],
+                        platoon_boost   = mc_p["platoon_boost"],
+                        saber_weight    = mc_p.get("saber_weight", 0.5),
+                        run_count       = mc_p.get("run_count", 0) + N_SIM * 7,
+                    )
 
                 # ─── Step 1: Simulate opponent teams ────────────────────
                 N_OPP      = ss_league_sz - 1
@@ -2251,6 +2256,16 @@ elif page == "🎲 Monte Carlo Sim":
                 with st.spinner(f"Simulating {N_OPP} opponent teams × {N_SIM} seasons..."):
                     np.random.seed(mc_p.get("run_count", 0) + 42)
                     opp_season = {c: [] for c in cats_ss}
+
+                    # Realistic league quality tiers:
+                    # ~25% elite, ~50% average, ~25% weak — just like real leagues
+                    # Each opponent gets a quality multiplier applied to their season projections
+                    quality_tiers = np.random.choice(
+                        [1.15, 1.08, 1.00, 0.93, 0.85],
+                        size=N_OPP,
+                        p=[0.15, 0.25, 0.35, 0.15, 0.10]
+                    )
+
                     for opp_i in range(N_OPP):
                         n_h = max(len(mc_p["hitters"]), 5)
                         n_p = max(len(mc_p["pitchers"]), 3)
@@ -2262,25 +2277,50 @@ elif page == "🎲 Monte Carlo Sim":
                             mc_p["injury_pct"], mc_p["regression_pull"],
                             mc_p["platoon_boost"], mc_p.get("saber_weight", 0.5),
                             run_count=mc_p.get("run_count", 0) + 1000 + opp_i + N_SIM * 100)
+                        q = quality_tiers[opp_i]
                         for c in cats_ss:
                             vals = odf[c].values[:N_SIM] if c in odf.columns else np.zeros(N_SIM)
                             if len(vals) < N_SIM:
                                 vals = np.pad(vals, (0, N_SIM - len(vals)), constant_values=float(np.mean(vals)) if len(vals) else 0.0)
+                            # Apply quality multiplier: counting up, rate stats flip for lower-is-better
+                            if c in MC_LOWER_BETTER:
+                                vals = vals / q   # lower ERA/WHIP = better opponent
+                            else:
+                                vals = vals * q
                             opp_season[c].append(vals)
                     opp_season = {c: np.array(v) for c, v in opp_season.items()}  # (N_OPP, N_SIM)
 
                 # ─── Step 2: Convert season → weekly draws ───────────────
                 def season_to_weekly(season_vals, cat, n_weeks):
-                    """season_vals: (N_SIM,) → returns (N_SIM, n_weeks)"""
+                    """
+                    season_vals: (N_SIM,) season projections → (N_SIM, n_weeks) weekly draws.
+
+                    Key insight: each sim has its OWN mean (their projected season pace).
+                    Week-to-week noise is added on top of that per-sim mean so that:
+                      - A sim with a great season projection stays great week-to-week
+                      - But has realistic game-to-game variance (~±40% of weekly mean)
+                    This ensures roster quality actually matters.
+                    """
+                    n = len(season_vals)
+                    noise = np.random.normal(0, 1, (n, n_weeks))  # (N_SIM, n_weeks)
+
                     if cat in RATE_CATS:
-                        wk_mu = season_vals                          # rate: weekly ≈ season rate
-                        wk_sd = max(float(np.std(season_vals)) * 1.6,
-                                    float(np.mean(season_vals)) * 0.06)
-                        draws = wk_mu[:, None] + np.random.normal(0, wk_sd, (len(season_vals), n_weeks))
+                        # Rate stats: weekly value ≈ season rate ± realistic weekly noise
+                        # AVG weekly SD ≈ 0.040 (realistic: going 5/20 = .250 ± .045)
+                        # ERA/WHIP weekly SD ≈ 15% of season value
+                        wk_mu = season_vals[:, None]                          # (N_SIM, 1)
+                        if cat == "AVG":
+                            wk_sd = np.clip(season_vals * 0.15, 0.020, 0.060)[:, None]
+                        else:  # ERA, WHIP
+                            wk_sd = np.clip(season_vals * 0.25, 0.30, 2.0)[:, None]
+                        draws = wk_mu + noise * wk_sd
                     else:
-                        wk_mu = season_vals / WK_DIV                 # weekly counting pace
-                        wk_sd = np.sqrt(np.clip(wk_mu * 3, 0.01, None))  # Poisson-like variance
-                        draws = wk_mu[:, None] + np.random.normal(0, 1, (len(season_vals), n_weeks)) * wk_sd[:, None]
+                        # Counting stats: weekly pace = season_total / 20 weeks
+                        # Weekly SD ≈ 45% of weekly mean (real baseball is noisy week-to-week)
+                        wk_mu = (season_vals / WK_DIV)[:, None]               # (N_SIM, 1)
+                        wk_sd = np.clip(wk_mu * 0.55, 0.3, None)             # min noise floor
+                        draws = wk_mu + noise * wk_sd
+
                     # Clip to valid ranges
                     if cat == "AVG":    draws = np.clip(draws, 0.100, 0.450)
                     elif cat == "ERA":  draws = np.clip(draws, 0.50,  15.0)
