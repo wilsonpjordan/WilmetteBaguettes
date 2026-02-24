@@ -2233,6 +2233,16 @@ elif page == "🎲 Monte Carlo Sim":
 
                 cats_ss = [c for c in MC_ALL_CATS if c in team_sims.columns]
 
+                # Trim/expand team_sims to exactly N_SIM rows to avoid shape mismatches
+                if len(team_sims) != N_SIM:
+                    if len(team_sims) > N_SIM:
+                        team_sims_ss = team_sims.iloc[:N_SIM].reset_index(drop=True)
+                    else:
+                        # Resample with replacement to reach N_SIM
+                        team_sims_ss = team_sims.sample(n=N_SIM, replace=True, random_state=42).reset_index(drop=True)
+                else:
+                    team_sims_ss = team_sims
+
                 # ─── Step 1: Simulate opponent teams ────────────────────
                 N_OPP      = ss_league_sz - 1
                 all_h_pool = bat_all["Name"].dropna().unique().tolist()
@@ -2246,13 +2256,17 @@ elif page == "🎲 Monte Carlo Sim":
                         n_p = max(len(mc_p["pitchers"]), 3)
                         opp_h = tuple(np.random.choice(all_h_pool, size=min(n_h, len(all_h_pool)), replace=False))
                         opp_p = tuple(np.random.choice(all_p_pool, size=min(n_p, len(all_p_pool)), replace=False))
+                        # Include N_SIM in run_count so cache busts when sim count changes
                         odf, _ = mc_run_simulation(
                             opp_h, opp_p, N_SIM,
                             mc_p["injury_pct"], mc_p["regression_pull"],
                             mc_p["platoon_boost"], mc_p.get("saber_weight", 0.5),
-                            run_count=mc_p.get("run_count", 0) + 1000 + opp_i)
+                            run_count=mc_p.get("run_count", 0) + 1000 + opp_i + N_SIM * 100)
                         for c in cats_ss:
-                            opp_season[c].append(odf[c].values if c in odf.columns else np.zeros(N_SIM))
+                            vals = odf[c].values[:N_SIM] if c in odf.columns else np.zeros(N_SIM)
+                            if len(vals) < N_SIM:
+                                vals = np.pad(vals, (0, N_SIM - len(vals)), constant_values=float(np.mean(vals)) if len(vals) else 0.0)
+                            opp_season[c].append(vals)
                     opp_season = {c: np.array(v) for c, v in opp_season.items()}  # (N_OPP, N_SIM)
 
                 # ─── Step 2: Convert season → weekly draws ───────────────
@@ -2275,7 +2289,7 @@ elif page == "🎲 Monte Carlo Sim":
                     return draws
 
                 with st.spinner(f"Playing out {N_SIM} × {TOT_WEEKS} weeks..."):
-                    my_wk  = {c: season_to_weekly(team_sims[c].values, c, TOT_WEEKS) for c in cats_ss}
+                    my_wk  = {c: season_to_weekly(team_sims_ss[c].values, c, TOT_WEEKS) for c in cats_ss}
                     opp_wk = {c: np.stack([season_to_weekly(opp_season[c][oi], c, TOT_WEEKS)
                                            for oi in range(N_OPP)], axis=0) for c in cats_ss}
                     # opp_wk[c]: (N_OPP, N_SIM, TOT_WEEKS)
