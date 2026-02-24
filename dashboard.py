@@ -2284,22 +2284,23 @@ elif page == "🎲 Monte Carlo Sim":
                     # cat_w[sim, week, cat] = +1 win, -1 loss, 0 tie
                     cat_wlt = np.zeros((N_SIM, TOT_WEEKS, len(cats_ss)), dtype=np.int8)
 
+                    sim_idx = np.arange(N_SIM)
                     for wi in range(TOT_WEEKS):
                         opp_idx = np.random.randint(0, N_OPP, size=N_SIM)
                         for ci, cat in enumerate(cats_ss):
-                            my_v  = my_wk[cat][:, wi].astype(float)             # (N_SIM,)
-                            op_v  = opp_wk[cat][opp_idx, np.arange(N_SIM), wi].astype(float)
-                            diff  = my_v - op_v                                  # positive = I'm higher
-                            # Scalar tie tolerance: 0.001 for rate stats, 0 for counting
-                            tol   = 0.001 if cat in RATE_CATS else 0.0
+                            my_v = my_wk[cat][:, wi].astype(float)   # (N_SIM,)
+                            # opp_wk[cat]: (N_OPP, N_SIM, TOT_WEEKS)
+                            # advanced index: pick opp_idx[s] for sim s at week wi
+                            op_v = opp_wk[cat][opp_idx, sim_idx, wi].astype(float)  # (N_SIM,)
+                            diff = my_v - op_v
+                            tol  = 0.001 if cat in RATE_CATS else 0.0
                             if cat in MC_LOWER_BETTER:
-                                win  = diff < -tol   # lower is better → I win if my_v meaningfully lower
+                                win  = diff < -tol
                                 loss = diff >  tol
                             else:
-                                win  = diff >  tol   # higher is better
+                                win  = diff >  tol
                                 loss = diff < -tol
-                            result = np.where(win, np.int8(1), np.where(loss, np.int8(-1), np.int8(0)))
-                            cat_wlt[:, wi, ci] = result
+                            cat_wlt[:, wi, ci] = np.where(win, 1, np.where(loss, -1, 0)).astype(np.int8)
 
                     # ─── Step 4: Season-level aggregates ─────────────────
                     # Regular season only (first REG_WEEKS weeks)
