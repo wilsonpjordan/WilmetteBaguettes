@@ -2397,3 +2397,4 @@ elif page == "🎲 Monte Carlo Sim":
                 - This repeats across 20 weeks and hundreds of simulated seasons to estimate your true win% and playoff odds
                 - The opponent pool uses a slightly weaker-than-average team profile to simulate realistic league competition
                 """)
+
