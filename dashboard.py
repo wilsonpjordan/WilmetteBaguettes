@@ -2290,70 +2290,93 @@ elif page == "🎲 Monte Carlo Sim":
                             opp_season[c].append(vals)
                     opp_season = {c: np.array(v) for c, v in opp_season.items()}  # (N_OPP, N_SIM)
 
-                # ─── Step 2: Convert season → weekly draws ───────────────
-                def season_to_weekly(season_vals, cat, n_weeks):
+                # ─── Step 2: Build weekly draw helpers ───────────────────
+                def weekly_sample(season_mu, cat, size):
                     """
-                    season_vals: (N_SIM,) season projections → (N_SIM, n_weeks) weekly draws.
-
-                    Key insight: each sim has its OWN mean (their projected season pace).
-                    Week-to-week noise is added on top of that per-sim mean so that:
-                      - A sim with a great season projection stays great week-to-week
-                      - But has realistic game-to-game variance (~±40% of weekly mean)
-                    This ensures roster quality actually matters.
+                    Given a scalar season projection `season_mu` for one team/sim,
+                    draw `size` independent weekly values around that pace.
+                    Returns: 1-D array of length `size`.
                     """
-                    n = len(season_vals)
-                    noise = np.random.normal(0, 1, (n, n_weeks))  # (N_SIM, n_weeks)
-
                     if cat in RATE_CATS:
-                        # Rate stats: weekly value ≈ season rate ± realistic weekly noise
-                        # AVG weekly SD ≈ 0.040 (realistic: going 5/20 = .250 ± .045)
-                        # ERA/WHIP weekly SD ≈ 15% of season value
-                        wk_mu = season_vals[:, None]                          # (N_SIM, 1)
                         if cat == "AVG":
-                            wk_sd = np.clip(season_vals * 0.15, 0.020, 0.060)[:, None]
-                        else:  # ERA, WHIP
-                            wk_sd = np.clip(season_vals * 0.25, 0.30, 2.0)[:, None]
-                        draws = wk_mu + noise * wk_sd
+                            sd = max(season_mu * 0.15, 0.020)
+                        else:
+                            sd = max(season_mu * 0.30, 0.40)
+                        draws = np.random.normal(season_mu, sd, size)
+                        if cat == "AVG":    draws = np.clip(draws, 0.100, 0.450)
+                        elif cat == "ERA":  draws = np.clip(draws, 0.50,  15.0)
+                        else:               draws = np.clip(draws, 0.60,  3.0)
                     else:
-                        # Counting stats: weekly pace = season_total / 20 weeks
-                        # Weekly SD ≈ 45% of weekly mean (real baseball is noisy week-to-week)
-                        wk_mu = (season_vals / WK_DIV)[:, None]               # (N_SIM, 1)
-                        wk_sd = np.clip(wk_mu * 0.55, 0.3, None)             # min noise floor
-                        draws = wk_mu + noise * wk_sd
-
-                    # Clip to valid ranges
-                    if cat == "AVG":    draws = np.clip(draws, 0.100, 0.450)
-                    elif cat == "ERA":  draws = np.clip(draws, 0.50,  15.0)
-                    elif cat == "WHIP": draws = np.clip(draws, 0.60,  3.0)
-                    else:               draws = np.clip(draws, 0.0,   None)
+                        wk_mu = season_mu / WK_DIV
+                        sd    = max(wk_mu * 0.60, 0.20)
+                        draws = np.random.normal(wk_mu, sd, size)
+                        draws = np.clip(draws, 0.0, None)
                     return draws
 
-                with st.spinner(f"Playing out {N_SIM} × {TOT_WEEKS} weeks..."):
-                    my_wk  = {c: season_to_weekly(team_sims_ss[c].values, c, TOT_WEEKS) for c in cats_ss}
-                    opp_wk = {c: np.stack([season_to_weekly(opp_season[c][oi], c, TOT_WEEKS)
-                                           for oi in range(N_OPP)], axis=0) for c in cats_ss}
-                    # opp_wk[c]: (N_OPP, N_SIM, TOT_WEEKS)
+                # Pre-compute per-opponent season MEDIANS (one number per opp per cat)
+                # This is the opponent's true talent level — independent of your sim draws
+                opp_medians = {}   # {cat: array(N_OPP)}
+                for c in cats_ss:
+                    opp_medians[c] = np.array([float(np.median(opp_season[c][oi])) for oi in range(N_OPP)])
 
-                    # ─── Step 3: Category-by-category W / L / T each week ──
-                    # cat_w[sim, week, cat] = +1 win, -1 loss, 0 tie
+                # Pre-compute your team's per-sim weekly paces
+                # my_pace[cat]: (N_SIM,) — each sim's season projection
+                my_pace = {c: team_sims_ss[c].values.astype(float) for c in cats_ss}
+
+                with st.spinner(f"Playing out {N_SIM} × {TOT_WEEKS} weeks..."):
+                    # ─── Step 3: Category-by-category W / L / T each week ──────
+                    # For EACH sim × week:
+                    #   - Your weekly stat = sample from YOUR sim's season pace
+                    #   - Opponent weekly stat = sample from a RANDOMLY CHOSEN opponent's median pace
+                    #   - These are INDEPENDENT draws — no correlation
                     cat_wlt = np.zeros((N_SIM, TOT_WEEKS, len(cats_ss)), dtype=np.int8)
 
-                    sim_idx = np.arange(N_SIM)
                     for wi in range(TOT_WEEKS):
-                        opp_idx = np.random.randint(0, N_OPP, size=N_SIM)
+                        # Each sim faces a different random opponent this week
+                        opp_idx = np.random.randint(0, N_OPP, size=N_SIM)  # (N_SIM,)
+
                         for ci, cat in enumerate(cats_ss):
-                            my_v = my_wk[cat][:, wi].astype(float)   # (N_SIM,)
-                            # opp_wk[cat]: (N_OPP, N_SIM, TOT_WEEKS)
-                            # advanced index: pick opp_idx[s] for sim s at week wi
-                            op_v = opp_wk[cat][opp_idx, sim_idx, wi].astype(float)  # (N_SIM,)
-                            diff = my_v - op_v
-                            tol  = 0.001 if cat in RATE_CATS else 0.0
-                            if cat in MC_LOWER_BETTER:
-                                win  = diff < -tol
-                                loss = diff >  tol
+                            # Your weekly value: sampled around each sim's own season pace
+                            my_season_mu = my_pace[cat]          # (N_SIM,)
+                            if cat in RATE_CATS:
+                                if cat == "AVG":
+                                    sd = np.clip(my_season_mu * 0.15, 0.020, 0.060)
+                                else:
+                                    sd = np.clip(my_season_mu * 0.30, 0.40, 2.5)
+                                my_v = my_season_mu + np.random.normal(0, 1, N_SIM) * sd
+                                if cat == "AVG":    my_v = np.clip(my_v, 0.100, 0.450)
+                                elif cat == "ERA":  my_v = np.clip(my_v, 0.50,  15.0)
+                                else:               my_v = np.clip(my_v, 0.60,  3.0)
                             else:
-                                win  = diff >  tol
-                                loss = diff < -tol
+                                wk_mu = my_season_mu / WK_DIV
+                                sd    = np.clip(wk_mu * 0.60, 0.20, None)
+                                my_v  = np.clip(wk_mu + np.random.normal(0, 1, N_SIM) * sd, 0, None)
+
+                            # Opponent weekly value: sampled around THAT OPPONENT's median pace
+                            # Each sim independently draws its opponent's weekly stat
+                            opp_mu = opp_medians[cat][opp_idx]   # (N_SIM,) — opponent's talent level
+                            if cat in RATE_CATS:
+                                if cat == "AVG":
+                                    osd = np.clip(opp_mu * 0.15, 0.020, 0.060)
+                                else:
+                                    osd = np.clip(opp_mu * 0.30, 0.40, 2.5)
+                                op_v = opp_mu + np.random.normal(0, 1, N_SIM) * osd
+                                if cat == "AVG":    op_v = np.clip(op_v, 0.100, 0.450)
+                                elif cat == "ERA":  op_v = np.clip(op_v, 0.50,  15.0)
+                                else:               op_v = np.clip(op_v, 0.60,  3.0)
+                            else:
+                                owk  = opp_mu / WK_DIV
+                                osd  = np.clip(owk * 0.60, 0.20, None)
+                                op_v = np.clip(owk + np.random.normal(0, 1, N_SIM) * osd, 0, None)
+
+                            # Compare — tol=0 means exact ties are Ts (rare for floats, realistic)
+                            tol = 1e-6
+                            if cat in MC_LOWER_BETTER:
+                                win  = my_v < op_v - tol
+                                loss = my_v > op_v + tol
+                            else:
+                                win  = my_v > op_v + tol
+                                loss = my_v < op_v - tol
                             cat_wlt[:, wi, ci] = np.where(win, 1, np.where(loss, -1, 0)).astype(np.int8)
 
                     # ─── Step 4: Season-level aggregates ─────────────────
