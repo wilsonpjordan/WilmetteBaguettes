@@ -2287,18 +2287,19 @@ elif page == "🎲 Monte Carlo Sim":
                     for wi in range(TOT_WEEKS):
                         opp_idx = np.random.randint(0, N_OPP, size=N_SIM)
                         for ci, cat in enumerate(cats_ss):
-                            my_v  = my_wk[cat][:, wi]
-                            op_v  = opp_wk[cat][opp_idx, np.arange(N_SIM), wi]
-                            # Tolerance for "tie": within 0.5% of each other for rate stats,
-                            # exact equality for counting stats (ties are rare but real)
-                            tol = np.abs(my_v) * 0.005 if cat in RATE_CATS else 1e-9
+                            my_v  = my_wk[cat][:, wi].astype(float)             # (N_SIM,)
+                            op_v  = opp_wk[cat][opp_idx, np.arange(N_SIM), wi].astype(float)
+                            diff  = my_v - op_v                                  # positive = I'm higher
+                            # Scalar tie tolerance: 0.001 for rate stats, 0 for counting
+                            tol   = 0.001 if cat in RATE_CATS else 0.0
                             if cat in MC_LOWER_BETTER:
-                                result = np.where(my_v < op_v - tol,  1,   # I win (lower is better)
-                                         np.where(my_v > op_v + tol, -1, 0))  # I lose / tie
+                                win  = diff < -tol   # lower is better → I win if my_v meaningfully lower
+                                loss = diff >  tol
                             else:
-                                result = np.where(my_v > op_v + tol,  1,
-                                         np.where(my_v < op_v - tol, -1, 0))
-                            cat_wlt[:, wi, ci] = result.astype(np.int8)
+                                win  = diff >  tol   # higher is better
+                                loss = diff < -tol
+                            result = np.where(win, np.int8(1), np.where(loss, np.int8(-1), np.int8(0)))
+                            cat_wlt[:, wi, ci] = result
 
                     # ─── Step 4: Season-level aggregates ─────────────────
                     # Regular season only (first REG_WEEKS weeks)
