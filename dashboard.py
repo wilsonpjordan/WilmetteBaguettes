@@ -958,11 +958,11 @@ elif page == "🔍 Player Deep Dive":
             cv = round(float(vals.std() / abs(vals.mean()) * 100), 1) if vals.mean() != 0 else 0
             proj_rows.append({
                 "Category": cat,
-                "Floor (P10)": round(p10, 3 if cat in ["AVG","ERA","WHIP"] else 0),
-                "P25":         round(p25, 3 if cat in ["AVG","ERA","WHIP"] else 0),
-                "Median":      round(p50, 3 if cat in ["AVG","ERA","WHIP"] else 0),
-                "P75":         round(p75, 3 if cat in ["AVG","ERA","WHIP"] else 0),
-                "Ceiling (P90)":round(p90,3 if cat in ["AVG","ERA","WHIP"] else 0),
+                "Floor (P10)": round(p10, 3 if cat == "AVG" else 2),
+                "P25":         round(p25, 3 if cat == "AVG" else 2),
+                "Median":      round(p50, 3 if cat == "AVG" else 2),
+                "P75":         round(p75, 3 if cat == "AVG" else 2),
+                "Ceiling (P90)":round(p90, 3 if cat == "AVG" else 2),
                 "Volatility (CV%)": cv,
                 "Direction":   "⬇️ Lower=Better" if cat in MC_LOWER_BETTER else "⬆️ Higher=Better",
             })
@@ -1038,9 +1038,9 @@ elif page == "🔍 Player Deep Dive":
 
         def _fmt(val, cat):
             """Format a stat value appropriately — no trailing zeros."""
-            if cat in RATE_CATS:
+            if cat == "AVG":
                 return round(float(val), 3)
-            return round(float(val), 1)
+            return round(float(val), 2)
 
         vs_rows = []
         for cat in cats_avail:
@@ -1652,162 +1652,231 @@ elif page == "🎲 Monte Carlo Sim":
     #  DEPTH CHART — visual roster builder
     # ═══════════════════════════════════════════════════════════
 
-    # Yahoo standard positions
-    LINEUP_POSITIONS = {
-        "C":  {"label":"C",  "x":0.50,"y":0.10,"max":1},
-        "1B": {"label":"1B", "x":0.72,"y":0.28,"max":1},
-        "2B": {"label":"2B", "x":0.60,"y":0.35,"max":1},
-        "3B": {"label":"3B", "x":0.28,"y":0.28,"max":1},
-        "SS": {"label":"SS", "x":0.40,"y":0.35,"max":1},
-        "LF": {"label":"LF", "x":0.18,"y":0.55,"max":1},
-        "CF": {"label":"CF", "x":0.50,"y":0.65,"max":1},
-        "RF": {"label":"RF", "x":0.82,"y":0.55,"max":1},
-        "CI": {"label":"CI", "x":0.72,"y":0.14,"max":1},
-        "MI": {"label":"MI", "x":0.28,"y":0.14,"max":1},
-        "Util":{"label":"Util","x":0.50,"y":0.20,"max":1},
-        "BN1":{"label":"BN", "x":0.15,"y":0.88,"max":1},
-        "BN2":{"label":"BN", "x":0.35,"y":0.88,"max":1},
-        "BN3":{"label":"BN", "x":0.55,"y":0.88,"max":1},
-        "BN4":{"label":"BN", "x":0.75,"y":0.88,"max":1},
-        "SP1":{"label":"SP", "x":0.10,"y":0.78,"max":1},
-        "SP2":{"label":"SP", "x":0.28,"y":0.78,"max":1},
-        "SP3":{"label":"SP", "x":0.46,"y":0.78,"max":1},
-        "SP4":{"label":"SP", "x":0.64,"y":0.78,"max":1},
-        "SP5":{"label":"SP", "x":0.82,"y":0.78,"max":1},
-        "RP1":{"label":"RP", "x":0.20,"y":0.68,"max":1},
-        "RP2":{"label":"RP", "x":0.38,"y":0.68,"max":1},
-        "RP3":{"label":"RP", "x":0.56,"y":0.68,"max":1},
-        "RP4":{"label":"RP", "x":0.74,"y":0.68,"max":1},
-        "RP5":{"label":"RP", "x":0.90,"y":0.68,"max":1},
+    # ── Yahoo 12-team standard roster composition ──────────────
+    # C, 1B, 2B, 3B, SS, OF, OF, OF, Util, Util, SP, SP, RP, RP, P, P, P, P, BN x5, IL x4
+    ALL_POSITIONS = [
+        "C","1B","2B","3B","SS",
+        "OF1","OF2","OF3",
+        "Util1","Util2",
+        "SP1","SP2","RP1","RP2",
+        "P1","P2","P3","P4",
+        "BN1","BN2","BN3","BN4","BN5",
+        "IL1","IL2","IL3","IL4",
+    ]
+
+    HIT_POSITIONS = ["C","1B","2B","3B","SS","OF1","OF2","OF3","Util1","Util2",
+                     "BN1","BN2","BN3","BN4","BN5","IL1","IL2","IL3","IL4"]
+    PIT_POSITIONS = ["SP1","SP2","RP1","RP2","P1","P2","P3","P4",
+                     "BN1","BN2","BN3","BN4","BN5","IL1","IL2","IL3","IL4"]
+    # Pure pitcher-only slots (BN/IL shared)
+    PURE_PIT = ["SP1","SP2","RP1","RP2","P1","P2","P3","P4"]
+    PURE_HIT = ["C","1B","2B","3B","SS","OF1","OF2","OF3","Util1","Util2"]
+    SHARED   = ["BN1","BN2","BN3","BN4","BN5","IL1","IL2","IL3","IL4"]
+
+    POS_LABEL = {
+        "C":"C","1B":"1B","2B":"2B","3B":"3B","SS":"SS",
+        "OF1":"OF","OF2":"OF","OF3":"OF",
+        "Util1":"Util","Util2":"Util",
+        "SP1":"SP","SP2":"SP","RP1":"RP","RP2":"RP",
+        "P1":"P","P2":"P","P3":"P","P4":"P",
+        "BN1":"BN","BN2":"BN","BN3":"BN","BN4":"BN","BN5":"BN",
+        "IL1":"IL","IL2":"IL","IL3":"IL","IL4":"IL",
     }
 
     # Init depth chart state
     if "dc_roster" not in st.session_state:
-        st.session_state["dc_roster"] = {pos: "" for pos in LINEUP_POSITIONS}
+        st.session_state["dc_roster"] = {pos: "" for pos in ALL_POSITIONS}
+
+    dc = st.session_state["dc_roster"]
 
     st.markdown("### 🏟️ Depth Chart Roster")
-    st.caption("Assign players to positions below, then run the sim. SP/RP/BN slots are pitcher spots.")
+    st.caption("Build your Yahoo fantasy roster below. Field positions on the left, pitchers & bench on the right.")
 
+    # ── CSS ──────────────────────────────────────────────────────
     st.markdown("""
     <style>
-    .dc-field { background: radial-gradient(ellipse 80% 60% at 50% 50%, #2d5a1b 60%, #1a3a0d 100%);
-                border-radius:12px; padding:4px; position:relative; border:2px solid #3d7a2b; }
-    .dc-slot  { background:rgba(0,0,0,0.55); border:1.5px solid #4fc3f7; border-radius:8px;
-                padding:5px 8px; text-align:center; font-size:11px; cursor:pointer;
-                transition:all 0.2s; min-height:42px; }
-    .dc-slot:hover { border-color:#FFD700; background:rgba(79,195,247,0.18); }
-    .dc-slot-filled { border-color:#21C354 !important; background:rgba(33,195,84,0.12) !important; }
-    .dc-pos-label { color:#4fc3f7; font-weight:700; font-size:10px; letter-spacing:1px; }
-    .dc-player-name { color:#fff; font-size:11px; font-weight:600; margin-top:2px; white-space:nowrap;
-                      overflow:hidden; text-overflow:ellipsis; max-width:80px; }
-    .dc-infield-dirt { position:absolute; width:30%; height:30%; background:radial-gradient(#8B5E3C,#6B4226);
-                       border-radius:50%; top:35%; left:35%; opacity:0.35; }
+    .dc-wrapper { display:flex; gap:16px; align-items:flex-start; }
+    .dc-field-col { flex:0 0 auto; }
+    .dc-right-col { flex:1; }
+    .dc-section-title {
+        font-size:13px; font-weight:700; color:#4fc3f7;
+        letter-spacing:1px; text-transform:uppercase;
+        margin:10px 0 4px 0; border-bottom:1px solid #2d3748; padding-bottom:3px;
+    }
+    .dc-slot-row {
+        display:flex; align-items:center; gap:6px;
+        padding:3px 0;
+    }
+    .dc-pos-badge {
+        background:#1a2332; border:1px solid #4fc3f7; border-radius:4px;
+        color:#4fc3f7; font-weight:700; font-size:10px;
+        padding:2px 6px; min-width:32px; text-align:center;
+        white-space:nowrap;
+    }
+    .dc-pos-badge.filled { border-color:#21C354; color:#21C354; background:#0d1f10; }
+    .dc-pos-badge.bench  { border-color:#FFA500; color:#FFA500; background:#1f1700; }
+    .dc-pos-badge.il     { border-color:#FF4B4B; color:#FF4B4B; background:#1f0000; }
+    .dc-player-val {
+        background:#0e1117; border:1px solid #2d3748; border-radius:4px;
+        color:#eee; font-size:11px; padding:3px 8px; flex:1;
+        white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    }
+    .dc-player-val.empty { color:#555; font-style:italic; }
     </style>
     """, unsafe_allow_html=True)
 
-    # Draw depth chart using a plotly figure as background + columns for slots
-    # Use columns grid layout for the actual selectors
-    dc = st.session_state["dc_roster"]
+    # ── Build the HTML baseball field with position labels overlaid ──
+    def _field_html(dc):
+        def _slot(key, x_pct, y_pct, label, anchor="center"):
+            player = dc.get(key, "")
+            short  = (player[:12] + "…") if len(player) > 12 else player
+            disp   = short if short else "—"
+            filled = "filled" if player else ""
+            # anchor: center | left | right
+            transform = {
+                "center": "translate(-50%,-50%)",
+                "left":   "translate(0%,-50%)",
+                "right":  "translate(-100%,-50%)",
+            }[anchor]
+            return f'''
+            <div style="position:absolute; left:{x_pct}%; top:{y_pct}%;
+                        transform:{transform}; text-align:center; z-index:10;">
+                <div style="font-size:11px; font-weight:800; color:{'#21C354' if player else '#FFD700'};
+                            text-shadow:1px 1px 3px #000; letter-spacing:0.5px;">{label}</div>
+                <div style="background:{'rgba(33,195,84,0.25)' if player else 'rgba(0,0,0,0.65)'};
+                            border:1.5px solid {'#21C354' if player else 'rgba(255,255,255,0.3)'};
+                            border-radius:4px; padding:2px 6px; min-width:80px;
+                            font-size:10px; color:{'#21C354' if player else '#aaa'};
+                            white-space:nowrap; font-weight:600;">{disp}</div>
+            </div>'''
 
-    # ── Draw the baseball field SVG background + position slots using plotly ──
-    def build_field_figure(dc, pos_defs):
-        fig = go.Figure()
-        # Field background — green oval
-        theta = np.linspace(0, 2*np.pi, 200)
-        fig.add_shape(type="rect", x0=0, y0=0, x1=1, y1=1,
-            fillcolor="#1e4d0f", line_color="#2d6e1a", line_width=2)
-        # Infield dirt diamond
-        dia_x = [0.50, 0.72, 0.50, 0.28, 0.50]
-        dia_y = [0.12, 0.35, 0.58, 0.35, 0.12]
-        fig.add_trace(go.Scatter(x=dia_x, y=dia_y, fill="toself",
-            fillcolor="#7a5230", line=dict(color="#5c3d20", width=2),
-            mode="lines", showlegend=False, hoverinfo="skip"))
-        # Outfield arc
-        arc_theta = np.linspace(np.pi*0.05, np.pi*0.95, 100)
-        arc_x = 0.50 + 0.46 * np.cos(arc_theta)
-        arc_y = 0.35 + 0.50 * np.sin(arc_theta)
-        fig.add_trace(go.Scatter(x=arc_x, y=arc_y, mode="lines",
-            line=dict(color="#4a9e2f", width=3), showlegend=False, hoverinfo="skip"))
-        # Pitcher's mound
-        fig.add_shape(type="circle", x0=0.44, y0=0.295, x1=0.56, y1=0.365,
-            fillcolor="#9e7a50", line_color="#7a5c3a", line_width=1.5)
-        # Home plate
-        fig.add_shape(type="rect", x0=0.47, y0=0.09, x1=0.53, y1=0.13,
-            fillcolor="white", line_color="#ccc", line_width=1)
-        # Position slots
-        for pos_key, pd_ in pos_defs.items():
-            player = dc.get(pos_key, "")
-            is_filled = bool(player)
-            color     = "#21C354" if is_filled else "#4fc3f7"
-            bg        = "rgba(33,195,84,0.20)" if is_filled else "rgba(0,0,0,0.55)"
-            label_txt = pd_["label"]
-            player_short = player[:10] + "…" if len(player) > 10 else player
-            display   = f"<b>{label_txt}</b><br><span style='font-size:9px'>{player_short if player_short else '—'}</span>"
-            fig.add_annotation(
-                x=pd_["x"], y=pd_["y"],
-                text=display,
-                showarrow=False,
-                font=dict(size=10, color=color),
-                bgcolor=bg,
-                bordercolor=color,
-                borderwidth=1.5,
-                borderpad=4,
-                align="center",
-            )
-        fig.update_layout(
-            xaxis=dict(range=[0,1], visible=False, fixedrange=True),
-            yaxis=dict(range=[0,1], visible=False, fixedrange=True, scaleanchor="x"),
-            margin=dict(l=0,r=0,t=0,b=0),
-            height=500,
-            paper_bgcolor="#0e1117",
-            plot_bgcolor="#1e4d0f",
-            showlegend=False,
-            hovermode=False,
-        )
-        return fig
+        # Field: 600×520px SVG + position divs
+        # Coordinate system: 0,0 = top-left of the 600×520 container
+        # Diamond corners (in %): Home=50%,88% | 1B=78%,62% | 2B=50%,36% | 3B=22%,62%
+        return f'''
+        <div style="position:relative; width:600px; height:520px; margin:0 auto;
+                    background:#0e1117; border-radius:12px; overflow:hidden;">
 
-    col_field, col_sliders = st.columns([3, 2])
+          <!-- SVG field -->
+          <svg width="600" height="520" style="position:absolute;top:0;left:0;">
+            <!-- Sky/warning track fill -->
+            <rect width="600" height="520" fill="#1a3d0a"/>
+            <!-- Outfield grass wedge (clipped arc) -->
+            <path d="M 300 460 L 30 460 Q 20 160 300 60 Q 580 160 570 460 Z"
+                  fill="#2d6b14" stroke="#3d8a1e" stroke-width="2"/>
+            <!-- Infield grass -->
+            <path d="M 300 440 L 468 290 L 300 140 L 132 290 Z"
+                  fill="#3a7d1e" stroke="#4a9d28" stroke-width="1.5"/>
+            <!-- Infield dirt diamond -->
+            <path d="M 300 430 L 460 285 L 300 140 L 140 285 Z"
+                  fill="#9e7040" stroke="#7a5230" stroke-width="2"/>
+            <!-- Foul lines -->
+            <line x1="300" y1="450" x2="40"  y2="50"  stroke="white" stroke-width="1.5" opacity="0.6"/>
+            <line x1="300" y1="450" x2="560" y2="50"  stroke="white" stroke-width="1.5" opacity="0.6"/>
+            <!-- Outfield arc/wall -->
+            <path d="M 40 450 Q 20 140 300 50 Q 580 140 560 450"
+                  fill="none" stroke="#5aaa28" stroke-width="4"/>
+            <!-- Warning track -->
+            <path d="M 55 445 Q 30 150 300 65 Q 570 150 545 445"
+                  fill="none" stroke="#c4a96a" stroke-width="8" opacity="0.5"/>
+            <!-- Pitcher mound -->
+            <ellipse cx="300" cy="285" rx="22" ry="16" fill="#b8945a" stroke="#8a6c3a" stroke-width="1.5"/>
+            <!-- Pitcher's rubber -->
+            <rect x="293" y="281" width="14" height="5" rx="1" fill="white" opacity="0.8"/>
+            <!-- Bases -->
+            <rect x="288" y="128" width="24" height="24" rx="2" fill="white" stroke="#ddd" stroke-width="1" transform="rotate(45,300,140)"/>
+            <rect x="448" y="273" width="24" height="24" rx="2" fill="white" stroke="#ddd" stroke-width="1" transform="rotate(45,460,285)"/>
+            <rect x="128" y="273" width="24" height="24" rx="2" fill="white" stroke="#ddd" stroke-width="1" transform="rotate(45,140,285)"/>
+            <!-- Home plate (pentagon) -->
+            <polygon points="288,444 312,444 318,452 300,462 282,452" fill="white" stroke="#ddd" stroke-width="1"/>
+            <!-- Grass mowing stripes -->
+            <line x1="300" y1="60"  x2="300" y2="450" stroke="rgba(255,255,255,0.04)" stroke-width="18"/>
+            <line x1="220" y1="80"  x2="220" y2="450" stroke="rgba(255,255,255,0.03)" stroke-width="14"/>
+            <line x1="380" y1="80"  x2="380" y2="450" stroke="rgba(255,255,255,0.03)" stroke-width="14"/>
+            <line x1="140" y1="130" x2="140" y2="450" stroke="rgba(255,255,255,0.02)" stroke-width="10"/>
+            <line x1="460" y1="130" x2="460" y2="450" stroke="rgba(255,255,255,0.02)" stroke-width="10"/>
+          </svg>
 
-    with col_field:
-        fig_field = build_field_figure(dc, LINEUP_POSITIONS)
-        st.plotly_chart(fig_field, use_container_width=True, config={"displayModeBar": False})
+          <!-- Position labels overlaid on field -->
+          {_slot("CF",  50,  14, "CF")}
+          {_slot("OF1", 26,  28, "LF", "left")}
+          {_slot("OF2", 74,  28, "RF", "right")}
+          {_slot("SS",  38,  52, "SS")}
+          {_slot("2B",  62,  52, "2B")}
+          {_slot("3B",  22,  56, "3B", "left")}
+          {_slot("1B",  78,  56, "1B", "right")}
+          {_slot("P1",  50,  58, "P")}
+          {_slot("C",   50,  84, "C")}
+        </div>
+        '''
 
-    with col_sliders:
-        st.markdown("**🔴 Batting Order / Position Players**")
-        hit_positions = ["C","1B","2B","3B","SS","LF","CF","RF","CI","MI","Util","BN1","BN2","BN3","BN4"]
-        pit_positions = ["SP1","SP2","SP3","SP4","SP5","RP1","RP2","RP3","RP4","RP5"]
+    # ── Render field + side panels ────────────────────────────
+    left_col, field_col, right_col = st.columns([1, 3, 1])
 
-        with st.expander("⚾ Hitter Slots", expanded=True):
-            for pos in hit_positions:
-                cur = dc.get(pos, "")
-                options = [""] + [n for n in all_h_names_mc if n not in dc.values() or n == cur]
-                sel = st.selectbox(
-                    f"{LINEUP_POSITIONS[pos]['label']} slot",
-                    options=options,
-                    index=options.index(cur) if cur in options else 0,
-                    key=f"dc_{pos}",
-                    label_visibility="collapsed",
-                    placeholder=f"{LINEUP_POSITIONS[pos]['label']} — select player",
-                )
-                st.session_state["dc_roster"][pos] = sel
+    with field_col:
+        st.markdown(_field_html(dc), unsafe_allow_html=True)
 
-        with st.expander("⚾ Pitcher Slots", expanded=True):
-            for pos in pit_positions:
-                cur = dc.get(pos, "")
-                options = [""] + [n for n in all_p_names_mc if n not in [dc.get(p,"") for p in pit_positions] or n == cur]
-                sel = st.selectbox(
-                    f"{LINEUP_POSITIONS[pos]['label']} slot",
-                    options=options,
-                    index=options.index(cur) if cur in options else 0,
-                    key=f"dc_{pos}",
-                    label_visibility="collapsed",
-                    placeholder=f"{LINEUP_POSITIONS[pos]['label']} — select player",
-                )
-                st.session_state["dc_roster"][pos] = sel
+    # ── Selector panels below the field ───────────────────────
+    st.markdown("---")
+    sel_cols = st.columns([1,1,1,1])
 
-    # Derive hitter/pitcher lists from depth chart
-    dc_hitters = list({v for k,v in dc.items() if k in hit_positions and v})
-    dc_pitchers = list({v for k,v in dc.items() if k in pit_positions and v})
+    # Panel 1: Infield/Battery
+    with sel_cols[0]:
+        st.markdown('<div class="dc-section-title">⚾ Infield / Battery</div>', unsafe_allow_html=True)
+        for pos in ["C","1B","2B","3B","SS"]:
+            cur  = dc.get(pos, "")
+            taken = {v for k,v in dc.items() if v and k != pos}
+            opts = [""] + [n for n in all_h_names_mc if n not in taken]
+            idx  = opts.index(cur) if cur in opts else 0
+            sel  = st.selectbox(f"{POS_LABEL[pos]}", opts, index=idx, key=f"dc_{pos}",
+                                label_visibility="visible")
+            st.session_state["dc_roster"][pos] = sel
+
+    # Panel 2: Outfield + Util
+    with sel_cols[1]:
+        st.markdown('<div class="dc-section-title">🌿 Outfield / Util</div>', unsafe_allow_html=True)
+        for pos in ["OF1","OF2","OF3","Util1","Util2"]:
+            cur  = dc.get(pos, "")
+            taken = {v for k,v in dc.items() if v and k != pos}
+            opts = [""] + [n for n in all_h_names_mc if n not in taken]
+            idx  = opts.index(cur) if cur in opts else 0
+            sel  = st.selectbox(f"{POS_LABEL[pos]} {'('+str(['OF1','OF2','OF3'].index(pos)+1)+')' if 'OF' in pos else '('+ str(['Util1','Util2'].index(pos)+1)+')'}",
+                                opts, index=idx, key=f"dc_{pos}", label_visibility="visible")
+            st.session_state["dc_roster"][pos] = sel
+
+    # Panel 3: Pitchers
+    with sel_cols[2]:
+        st.markdown('<div class="dc-section-title">⚡ Pitchers</div>', unsafe_allow_html=True)
+        for pos in ["SP1","SP2","RP1","RP2","P1","P2","P3","P4"]:
+            cur  = dc.get(pos, "")
+            taken = {v for k,v in dc.items() if v and k != pos}
+            opts = [""] + [n for n in all_p_names_mc if n not in taken]
+            idx  = opts.index(cur) if cur in opts else 0
+            n    = int(pos[-1])
+            sel  = st.selectbox(f"{POS_LABEL[pos]} ({n})", opts, index=idx, key=f"dc_{pos}",
+                                label_visibility="visible")
+            st.session_state["dc_roster"][pos] = sel
+
+    # Panel 4: Bench + IL
+    with sel_cols[3]:
+        st.markdown('<div class="dc-section-title">🪑 Bench / IL</div>', unsafe_allow_html=True)
+        all_players = sorted(all_h_names_mc + all_p_names_mc)
+        for pos in ["BN1","BN2","BN3","BN4","BN5","IL1","IL2","IL3","IL4"]:
+            cur  = dc.get(pos, "")
+            taken = {v for k,v in dc.items() if v and k != pos}
+            opts = [""] + [n for n in all_players if n not in taken]
+            idx  = opts.index(cur) if cur in opts else 0
+            n    = int(pos[-1])
+            sel  = st.selectbox(f"{POS_LABEL[pos]} ({n})", opts, index=idx, key=f"dc_{pos}",
+                                label_visibility="visible")
+            st.session_state["dc_roster"][pos] = sel
+
+    # ── Derive rosters from depth chart ───────────────────────
+    # Hitters: pure hit slots + BN/IL that contain a hitter name
+    h_name_set = set(all_h_names_mc)
+    p_name_set = set(all_p_names_mc)
+    dc_hitters  = list({v for k,v in dc.items() if v and (k in PURE_HIT or (k in SHARED and v in h_name_set))})
+    dc_pitchers = list({v for k,v in dc.items() if v and (k in PURE_PIT or (k in SHARED and v in p_name_set))})
 
     # Sync to my_h / my_p session state so other pages see them
     if dc_hitters: st.session_state["my_h"] = dc_hitters
@@ -1893,10 +1962,12 @@ elif page == "🎲 Monte Carlo Sim":
                 summary_rows.append({
                     "Category": cat,
                     "Type": "Lower=Better" if cat in MC_LOWER_BETTER else "Higher=Better",
-                    "10th %ile": round(p10, 2), "25th %ile": round(p25, 2),
-                    "Median": round(p50, 2),
-                    "75th %ile": round(p75, 2), "90th %ile": round(p90, 2),
-                    "Std Dev": round(float(vals.std()), 2), "CV%": cv,
+                    "10th %ile": round(p10, 3 if cat == "AVG" else 2),
+                    "25th %ile": round(p25, 3 if cat == "AVG" else 2),
+                    "Median": round(p50, 3 if cat == "AVG" else 2),
+                    "75th %ile": round(p75, 3 if cat == "AVG" else 2),
+                    "90th %ile": round(p90, 3 if cat == "AVG" else 2),
+                    "Std Dev": round(float(vals.std()), 3 if cat == "AVG" else 2), "CV%": cv,
                 })
             sdf = pd.DataFrame(summary_rows)
             def _color_type(val):
@@ -2397,4 +2468,3 @@ elif page == "🎲 Monte Carlo Sim":
                 - This repeats across 20 weeks and hundreds of simulated seasons to estimate your true win% and playoff odds
                 - The opponent pool uses a slightly weaker-than-average team profile to simulate realistic league competition
                 """)
-
