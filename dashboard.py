@@ -12,6 +12,7 @@
 import os
 import warnings
 import streamlit as st
+import streamlit.components.v1 as st_components
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -1661,17 +1662,13 @@ elif page == "🎲 Monte Carlo Sim":
         "SP1","SP2","RP1","RP2",
         "P1","P2","P3","P4",
         "BN1","BN2","BN3","BN4","BN5",
-        "IL1","IL2","IL3","IL4",
     ]
 
-    HIT_POSITIONS = ["C","1B","2B","3B","SS","OF1","OF2","OF3","Util1","Util2",
-                     "BN1","BN2","BN3","BN4","BN5","IL1","IL2","IL3","IL4"]
-    PIT_POSITIONS = ["SP1","SP2","RP1","RP2","P1","P2","P3","P4",
-                     "BN1","BN2","BN3","BN4","BN5","IL1","IL2","IL3","IL4"]
-    # Pure pitcher-only slots (BN/IL shared)
+    HIT_POSITIONS = ["C","1B","2B","3B","SS","OF1","OF2","OF3","Util1","Util2","BN1","BN2","BN3","BN4","BN5"]
+    PIT_POSITIONS = ["SP1","SP2","RP1","RP2","P1","P2","P3","P4","BN1","BN2","BN3","BN4","BN5"]
     PURE_PIT = ["SP1","SP2","RP1","RP2","P1","P2","P3","P4"]
     PURE_HIT = ["C","1B","2B","3B","SS","OF1","OF2","OF3","Util1","Util2"]
-    SHARED   = ["BN1","BN2","BN3","BN4","BN5","IL1","IL2","IL3","IL4"]
+    SHARED   = ["BN1","BN2","BN3","BN4","BN5"]
 
     POS_LABEL = {
         "C":"C","1B":"1B","2B":"2B","3B":"3B","SS":"SS",
@@ -1680,7 +1677,6 @@ elif page == "🎲 Monte Carlo Sim":
         "SP1":"SP","SP2":"SP","RP1":"RP","RP2":"RP",
         "P1":"P","P2":"P","P3":"P","P4":"P",
         "BN1":"BN","BN2":"BN","BN3":"BN","BN4":"BN","BN5":"BN",
-        "IL1":"IL","IL2":"IL","IL3":"IL","IL4":"IL",
     }
 
     # Init depth chart state
@@ -1814,7 +1810,7 @@ elif page == "🎲 Monte Carlo Sim":
     left_col, field_col, right_col = st.columns([1, 3, 1])
 
     with field_col:
-        st.markdown(_field_html(dc), unsafe_allow_html=True)
+        st_components.html(_field_html(dc), height=540, scrolling=False)
 
     # ── Selector panels below the field ───────────────────────
     st.markdown("---")
@@ -1857,11 +1853,11 @@ elif page == "🎲 Monte Carlo Sim":
                                 label_visibility="visible")
             st.session_state["dc_roster"][pos] = sel
 
-    # Panel 4: Bench + IL
+    # Panel 4: Bench
     with sel_cols[3]:
-        st.markdown('<div class="dc-section-title">🪑 Bench / IL</div>', unsafe_allow_html=True)
+        st.markdown('<div class="dc-section-title">🪑 Bench</div>', unsafe_allow_html=True)
         all_players = sorted(all_h_names_mc + all_p_names_mc)
-        for pos in ["BN1","BN2","BN3","BN4","BN5","IL1","IL2","IL3","IL4"]:
+        for pos in ["BN1","BN2","BN3","BN4","BN5"]:
             cur  = dc.get(pos, "")
             taken = {v for k,v in dc.items() if v and k != pos}
             opts = [""] + [n for n in all_players if n not in taken]
@@ -1873,8 +1869,8 @@ elif page == "🎲 Monte Carlo Sim":
 
     # ── Derive rosters from depth chart ───────────────────────
     # Hitters: pure hit slots + BN/IL that contain a hitter name
-    h_name_set = set(all_h_names_mc)
-    p_name_set = set(all_p_names_mc)
+    h_name_set  = set(all_h_names_mc)
+    p_name_set  = set(all_p_names_mc)
     dc_hitters  = list({v for k,v in dc.items() if v and (k in PURE_HIT or (k in SHARED and v in h_name_set))})
     dc_pitchers = list({v for k,v in dc.items() if v and (k in PURE_PIT or (k in SHARED and v in p_name_set))})
 
