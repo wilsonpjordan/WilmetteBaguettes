@@ -763,7 +763,7 @@ if st.session_state.targets:
 if page == "📋 Draft Board":
     st.title("📋 Draft Board")
     st.caption(f"Composite z-score rankings — {LATEST} season. Green = above avg, red = below avg.")
-    ptype = st.radio("", ["Hitters","Pitchers"], horizontal=True)
+    ptype = st.radio("Player type", ["Hitters","Pitchers"], horizontal=True, label_visibility="collapsed")
     df    = bat_rec.copy() if ptype == "Hitters" else pit_rec.copy()
     c1, c2 = st.columns(2)
     teams  = ["All"] + sorted(df["Team"].dropna().unique().tolist())
@@ -806,7 +806,7 @@ if page == "📋 Draft Board":
 elif page == "🔍 Player Deep Dive":
     st.title("🔍 Player Deep Dive")
     st.caption("Full historical snapshot, trend charts, radar chart, and analysis for any player.")
-    ptype  = st.radio("", ["Hitter","Pitcher"], horizontal=True)
+    ptype  = st.radio("Player type", ["Hitter","Pitcher"], horizontal=True, label_visibility="collapsed")
     all_df = bat_all if ptype == "Hitter" else pit_all
     rec_df = bat_rec if ptype == "Hitter" else pit_rec
     name   = st.selectbox("Select player", sorted(all_df["Name"].dropna().unique().tolist()))
@@ -1174,7 +1174,7 @@ elif page == "🔍 Player Deep Dive":
         st.markdown("#### ⚖️ Compare vs. Another Player")
         st.caption("Run MC projections for a second player and compare side by side.")
 
-        compare_pool = all_h_names if is_hitter_dive else all_p_names
+        compare_pool = sorted(bat_all["Name"].dropna().unique()) if is_hitter_dive else sorted(pit_all["Name"].dropna().unique())
         compare_pool = [n for n in compare_pool if n != name]
         cmp_name = st.selectbox("Select player to compare", ["— select —"] + compare_pool, key="dive_cmp_name")
 
@@ -1669,7 +1669,7 @@ elif page == "⚙️ Weight Dashboard":
 
     with tab_preview:
         st.markdown("### 👁️ Live Rankings Preview")
-        preview_type = st.radio("", ["Hitters","Pitchers"], horizontal=True, key="preview_type")
+        preview_type = st.radio("Preview type", ["Hitters","Pitchers"], horizontal=True, key="preview_type", label_visibility="collapsed")
 
         def style_rc(val):
             try:
