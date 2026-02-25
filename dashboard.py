@@ -145,6 +145,7 @@ def _demo_pitching() -> pd.DataFrame:
             "GS":      np.random.randint(9  if yr==2025 else 18, 17 if yr==2025 else 32, n),
             "IP":      np.round(ip, 1),
             "W":       np.random.randint(3 if yr==2025 else 5, 10 if yr==2025 else 19, n),
+            "SV":      np.random.randint(0 if yr==2025 else 0, 8 if yr==2025 else 40, n),
             "SO":      so,
             "BB":      bb,
             "ERA":     era,
@@ -242,6 +243,7 @@ HITTER_CATS = {
 }
 PITCHER_CATS = {
     "W":    [("W",   1.0,True)],
+    "SV":   [("SV",  1.0,True)],
     "ERA":  [("ERA", 0.6,False),("xFIP",0.6,False),("SIERA",0.5,False)],
     "WHIP": [("WHIP",0.8,False),("BB%", 0.5,False)],
     "K":    [("SO",  1.0,True), ("K%",  0.8,True), ("SwStr%",0.5,True)],
@@ -313,12 +315,12 @@ for _k in ["drafted_h","drafted_p","my_h","my_p","targets"]:
 # ─────────────────────────────────────────────────────────────
 
 MC_H_CATS       = ["HR", "R", "RBI", "SB", "AVG"]
-MC_P_CATS       = ["W", "ERA", "WHIP", "SO"]
+MC_P_CATS       = ["W", "SV", "ERA", "WHIP", "SO"]
 MC_ALL_CATS     = MC_H_CATS + MC_P_CATS
 MC_LOWER_BETTER = {"ERA", "WHIP"}
-MC_COUNT_FLOORS = {"HR": 0, "R": 0, "RBI": 0, "SB": 0, "W": 0, "SO": 0}
+MC_COUNT_FLOORS = {"HR": 0, "R": 0, "RBI": 0, "SB": 0, "W": 0, "SV": 0, "SO": 0}
 MC_H_STATS      = ["HR","R","RBI","SB","AVG","OBP","SLG","wRC+","xwOBA","Barrel%","Hard%"]
-MC_P_STATS      = ["W","ERA","WHIP","SO","K%","xFIP","SIERA","BB%","SwStr%","GB%"]
+MC_P_STATS      = ["W","SV","ERA","WHIP","SO","K%","xFIP","SIERA","BB%","SwStr%","GB%"]
 
 
 def _mc_player_dist(name, src_df, stat_cols):
@@ -327,7 +329,7 @@ def _mc_player_dist(name, src_df, stat_cols):
     if hist.empty:
         return {s: (0.0, 0.0) for s in stat_cols}
 
-    counting = {"HR","R","RBI","SB","W","SO","BB","G","GS","IP","PA"}
+    counting = {"HR","R","RBI","SB","W","SV","SO","BB","G","GS","IP","PA"}
     full_g, full_gs, full_pa, full_ip = 162, 32, 650, 180
 
     scaled_rows = []
@@ -544,6 +546,7 @@ def _mc_sim_player(dist, n_sim, stat_cols, lower_clip=None):
         "FB%":     (0.10,  0.60),
         # Pitcher counting
         "W":       (0,     25),
+        "SV":      (0,     60),
         "SO":      (0,    320),
         "IP":      (0,    250),
         # Pitcher rate
@@ -654,9 +657,9 @@ def mc_run_simulation(hitters, pitchers, n_sim, injury_pct,
             swmu, _ = dist["SwStr%"]; somu, sosd = dist["SO"]
             dist["SO"] = (somu * 1.08 if swmu > 0.14 else somu * 0.93 if swmu < 0.09 else somu, sosd)
         sims = _mc_sim_player(dist, n_sim, MC_P_STATS, MC_COUNT_FLOORS)
-        sims = apply_injury(sims, ["W", "SO"], injury_pct)
+        sims = apply_injury(sims, ["W", "SV", "SO"], injury_pct)
         player_sims[name] = sims
-        for s in ["W", "SO"]:
+        for s in ["W", "SV", "SO"]:
             if s in sims.columns: sim_p[s] += sims[s].values
         for s in ["ERA", "WHIP"]:
             if s in sims.columns: sim_p[s] += sims[s].values
@@ -665,7 +668,7 @@ def mc_run_simulation(hitters, pitchers, n_sim, injury_pct,
     team_df = pd.DataFrame({
         "HR": sim_h["HR"], "R": sim_h["R"], "RBI": sim_h["RBI"],
         "SB": sim_h["SB"], "AVG": sim_h["AVG"],
-        "W": sim_p["W"], "ERA": sim_p["ERA"], "WHIP": sim_p["WHIP"], "SO": sim_p["SO"],
+        "W": sim_p["W"], "SV": sim_p["SV"], "ERA": sim_p["ERA"], "WHIP": sim_p["WHIP"], "SO": sim_p["SO"],
     })
     return team_df, player_sims
 
@@ -779,8 +782,8 @@ if page == "📋 Draft Board":
         show = ["Name","Team","composite","HR","R","RBI","SB","AVG",
                 "wRC+","xwOBA","Barrel%","xBA","z_HR","z_R","z_RBI","z_SB","z_AVG"]
     else:
-        show = ["Name","Team","composite","W","ERA","WHIP","SO",
-                "xFIP","SIERA","K%","SwStr%","LOB%","z_W","z_ERA","z_WHIP","z_K"]
+        show = ["Name","Team","composite","W","SV","ERA","WHIP","SO",
+                "xFIP","SIERA","K%","SwStr%","LOB%","z_W","z_SV","z_ERA","z_WHIP","z_K"]
     show = [c for c in show if c in df.columns]
     z_present = [c for c in show if c.startswith("z_")]
     styled = (
@@ -820,7 +823,7 @@ elif page == "🔍 Player Deep Dive":
     if ptype == "Hitter":
         key = ["HR","R","RBI","SB","AVG","wRC+","xwOBA","xBA","Barrel%","BB%","K%","EV"]
     else:
-        key = ["W","ERA","WHIP","SO","K%","xFIP","SIERA","SwStr%","BB%","LOB%","GB%","CSW%"]
+        key = ["W","SV","ERA","WHIP","SO","K%","xFIP","SIERA","SwStr%","BB%","LOB%","GB%","CSW%"]
     key = [k for k in key if k in hist.columns]
     latest_row = hist.iloc[-1]; prev_row = hist.iloc[-2] if len(hist) > 1 else None
     cols = st.columns(min(len(key), 6))
@@ -988,6 +991,49 @@ elif page == "🔍 Player Deep Dive":
 
         st.markdown("---")
 
+        # ── Narrative summary ─────────────────────────────
+        st.markdown("#### 🗒️ Projection Summary")
+        if proj_rows:
+            summary_parts = []
+            for row in proj_rows:
+                cat   = row["Category"]
+                med   = row["Median"]
+                p10   = row["Floor (P10)"]
+                p90   = row["Ceiling (P90)"]
+                cv    = row["Volatility (CV%)"]
+                lower = cat in MC_LOWER_BETTER
+                vol   = "highly volatile" if cv > 40 else "variable" if cv > 25 else "consistent"
+                tier  = ""
+                if not lower:
+                    if cat == "AVG":
+                        tier = "elite" if med >= 0.290 else "above avg" if med >= 0.270 else "avg" if med >= 0.250 else "below avg"
+                    elif cat == "HR":
+                        tier = "elite" if med >= 35 else "above avg" if med >= 25 else "avg" if med >= 15 else "below avg"
+                    elif cat == "SB":
+                        tier = "elite" if med >= 30 else "above avg" if med >= 18 else "avg" if med >= 8 else "below avg"
+                    elif cat in ("R","RBI"):
+                        tier = "elite" if med >= 100 else "above avg" if med >= 80 else "avg" if med >= 60 else "below avg"
+                    elif cat == "W":
+                        tier = "elite" if med >= 16 else "above avg" if med >= 12 else "avg" if med >= 8 else "below avg"
+                    elif cat == "SO":
+                        tier = "elite" if med >= 220 else "above avg" if med >= 170 else "avg" if med >= 120 else "below avg"
+                else:
+                    if cat == "ERA":
+                        tier = "elite" if med <= 2.80 else "above avg" if med <= 3.50 else "avg" if med <= 4.20 else "below avg"
+                    elif cat == "WHIP":
+                        tier = "elite" if med <= 1.00 else "above avg" if med <= 1.18 else "avg" if med <= 1.30 else "below avg"
+                fmt    = f"{med:.3f}" if cat=="AVG" else f"{med:.2f}" if cat in ("ERA","WHIP") else str(int(round(med)))
+                pfmt10 = f"{p10:.3f}" if cat=="AVG" else f"{p10:.2f}" if cat in ("ERA","WHIP") else str(int(round(p10)))
+                pfmt90 = f"{p90:.3f}" if cat=="AVG" else f"{p90:.2f}" if cat in ("ERA","WHIP") else str(int(round(p90)))
+                tier_color = {"elite":"🟢","above avg":"🔵","avg":"🟡","below avg":"🔴"}.get(tier,"⚪")
+                summary_parts.append(
+                    f"{tier_color} **{cat}**: {tier} ({fmt})  ·  range {pfmt10}–{pfmt90}  ·  {vol}"
+                )
+            for line in summary_parts:
+                st.markdown(line)
+
+        st.markdown("---")
+
         # ── Distribution histograms ───────────────────────
         st.markdown("#### 📈 Projected Distribution by Category")
         n_cats = len(cats_avail)
@@ -1122,6 +1168,121 @@ elif page == "🔍 Player Deep Dive":
                 f"{exp_cat_wins:.2f} / {cats_total}",
                 f"{'above' if exp_cat_wins > cats_total/2 else 'below'} .500")
 
+        st.markdown("---")
+
+        # ── Player Compare ────────────────────────────────
+        st.markdown("#### ⚖️ Compare vs. Another Player")
+        st.caption("Run MC projections for a second player and compare side by side.")
+
+        compare_pool = all_h_names if is_hitter_dive else all_p_names
+        compare_pool = [n for n in compare_pool if n != name]
+        cmp_name = st.selectbox("Select player to compare", ["— select —"] + compare_pool, key="dive_cmp_name")
+
+        if cmp_name and cmp_name != "— select —":
+            run_cmp = st.button(f"⚖️ Compare {name} vs {cmp_name}", key="dive_cmp_run")
+            cmp_key = f"dive_cmp_{name}_vs_{cmp_name}"
+
+            if run_cmp:
+                rc_cmp = st.session_state.get("mc_run_count", 0) + 999
+                with st.spinner(f"Simulating {cmp_name}..."):
+                    if is_hitter_dive:
+                        cmp_sims, _ = mc_run_simulation(
+                            hitters=(cmp_name,), pitchers=(),
+                            n_sim=dive_data["n_sim"], injury_pct=dive_data["inj"]/100,
+                            regression_pull=dive_data["regr"], platoon_boost=False,
+                            saber_weight=dive_data["saber"], run_count=rc_cmp)
+                    else:
+                        cmp_sims, _ = mc_run_simulation(
+                            hitters=(), pitchers=(cmp_name,),
+                            n_sim=dive_data["n_sim"], injury_pct=dive_data["inj"]/100,
+                            regression_pull=dive_data["regr"], platoon_boost=False,
+                            saber_weight=dive_data["saber"], run_count=rc_cmp)
+                st.session_state[cmp_key] = cmp_sims
+
+            cmp_data = st.session_state.get(cmp_key)
+            if cmp_data is not None:
+                cmp_rows = []
+                for cat in cats_avail:
+                    if cat not in tsims.columns or cat not in cmp_data.columns: continue
+                    my_v   = tsims[cat].dropna().values
+                    cmp_v  = cmp_data[cat].dropna().values
+                    my_med  = float(np.median(my_v))
+                    cmp_med = float(np.median(cmp_v))
+                    my_p10  = float(np.percentile(my_v, 10))
+                    my_p90  = float(np.percentile(my_v, 90))
+                    cmp_p10 = float(np.percentile(cmp_v, 10))
+                    cmp_p90 = float(np.percentile(cmp_v, 90))
+                    n       = min(len(my_v), len(cmp_v))
+                    if cat in MC_LOWER_BETTER:
+                        h2h_win = float(np.mean(my_v[:n] < cmp_v[:n])) * 100
+                        edge    = cmp_med - my_med   # positive = I'm better (lower)
+                    else:
+                        h2h_win = float(np.mean(my_v[:n] > cmp_v[:n])) * 100
+                        edge    = my_med - cmp_med   # positive = I'm better (higher)
+                    fmt = lambda v: f"{v:.3f}" if cat=="AVG" else f"{v:.2f}" if cat in ("ERA","WHIP") else str(int(round(v)))
+                    advantage = f"✅ {name}" if edge > 0 else f"🔴 {cmp_name}" if edge < 0 else "⚖️ Even"
+                    cmp_rows.append({
+                        "Category":          cat,
+                        f"{name} Median":    fmt(my_med),
+                        f"{name} Range":     f"{fmt(my_p10)}–{fmt(my_p90)}",
+                        f"{cmp_name} Median":fmt(cmp_med),
+                        f"{cmp_name} Range": f"{fmt(cmp_p10)}–{fmt(cmp_p90)}",
+                        "H2H Win %":         round(h2h_win, 1),
+                        "Advantage":         advantage,
+                    })
+
+                cmp_df = pd.DataFrame(cmp_rows)
+
+                def _adv_color(val):
+                    if name in str(val) and "✅" in str(val): return "color:#21C354; font-weight:bold"
+                    if "🔴" in str(val): return "color:#FF4B4B; font-weight:bold"
+                    return "color:#FFA500"
+
+                def _h2h_color(val):
+                    try:
+                        v = float(val)
+                        if v >= 60: return "color:#21C354; font-weight:bold"
+                        if v >= 50: return "color:#21C354"
+                        if v >= 40: return "color:#FFA500"
+                        return "color:#FF4B4B"
+                    except: return ""
+
+                st.dataframe(
+                    cmp_df.style
+                        .map(_adv_color, subset=["Advantage"])
+                        .map(_h2h_color, subset=["H2H Win %"])
+                        .format({"H2H Win %": "{:.1f}%"}),
+                    use_container_width=True, hide_index=True)
+
+                # Overlay distribution chart for most impacted category
+                best_cat = cmp_df.reindex(
+                    (cmp_df["H2H Win %"] - 50).abs().sort_values(ascending=False).index
+                ).iloc[0]["Category"]
+                st.markdown(f"**Distribution overlay — {best_cat}** (most differentiated category)")
+                fig_ov = go.Figure()
+                fig_ov.add_trace(go.Histogram(
+                    x=tsims[best_cat].values, nbinsx=40, name=name,
+                    opacity=0.65, marker_color="#4fc3f7"))
+                fig_ov.add_trace(go.Histogram(
+                    x=cmp_data[best_cat].values, nbinsx=40, name=cmp_name,
+                    opacity=0.65, marker_color="#FF7043"))
+                fig_ov.update_layout(
+                    barmode="overlay", template="plotly_dark", height=280,
+                    legend=dict(orientation="h", y=1.1),
+                    xaxis_title=best_cat, margin=dict(l=20,r=20,t=10,b=40))
+                st.plotly_chart(fig_ov, use_container_width=True)
+
+                # Summary verdict
+                my_wins   = sum(1 for r in cmp_rows if name in r["Advantage"] and "✅" in r["Advantage"])
+                cmp_wins  = sum(1 for r in cmp_rows if cmp_name in r["Advantage"] and "🔴" in r["Advantage"])
+                verdict_color = "#21C354" if my_wins > cmp_wins else "#FF4B4B" if cmp_wins > my_wins else "#FFA500"
+                verdict_text  = (f"✅ {name} wins {my_wins}/{len(cmp_rows)} categories"
+                                 if my_wins > cmp_wins else
+                                 f"🔴 {cmp_name} wins {cmp_wins}/{len(cmp_rows)} categories"
+                                 if cmp_wins > my_wins else
+                                 f"⚖️ Even split ({my_wins}/{len(cmp_rows)} each)")
+                st.markdown(f"<h4 style='color:{verdict_color};text-align:center'>{verdict_text}</h4>",
+                    unsafe_allow_html=True)
 
     st.markdown("---")
     st.markdown("### 📈 Historical Trends")
@@ -1173,7 +1334,7 @@ elif page == "🔍 Player Deep Dive":
         if ptype == "Hitter":
             zcats, labels = ["z_HR","z_R","z_RBI","z_SB","z_AVG"], ["HR","R","RBI","SB","AVG"]
         else:
-            zcats, labels = ["z_W","z_ERA","z_WHIP","z_K"], ["W","ERA","WHIP","K"]
+            zcats, labels = ["z_W","z_SV","z_ERA","z_WHIP","z_K"], ["W","SV","ERA","WHIP","K"]
         vals = [max(-3, min(3, float(rec.iloc[0].get(c,0)))) for c in zcats]
         fig_r = go.Figure(go.Scatterpolar(r=vals+[vals[0]], theta=labels+[labels[0]],
             fill="toself", line_color="#4fc3f7", fillcolor="rgba(79,195,247,0.18)"))
@@ -1213,7 +1374,7 @@ elif page == "📊 Category Scarcity":
     for cat, (src, col) in cat_sources.items():
         if col not in src.columns: continue
         s = src[col].dropna(); lower = cat in ["ERA","WHIP"]
-        rows.append({"Category":cat, "Type":"Pitching" if cat in ["W","ERA","WHIP","K"] else "Hitting",
+        rows.append({"Category":cat, "Type":"Pitching" if cat in ["W","SV","ERA","WHIP","K"] else "Hitting",
             "Median":round(s.quantile(0.50),3), "Good (P75)":round(s.quantile(0.75),3),
             "Elite":round(s.quantile(0.10) if lower else s.quantile(0.90),3), "Std Dev":round(s.std(),3)})
     st.dataframe(pd.DataFrame(rows), use_container_width=True)
@@ -1260,7 +1421,7 @@ elif page == "🎯 Strategy & Target List":
         p_slots = rs[1].number_input("Pitcher roster spots", 1, 15, 7)
         st.markdown("---")
         st.multiselect("Your category priorities (select in order of importance)",
-            ["HR","R","RBI","SB","AVG","W","ERA","WHIP","K"],
+            ["HR","R","RBI","SB","AVG","W","SV","ERA","WHIP","K"],
             default=["SB","HR","K","ERA","WHIP","R","RBI","AVG","W"])
         st.markdown("---"); st.markdown("#### 📋 Round-by-Round Guidance")
         total_rounds = h_slots + p_slots
@@ -1293,7 +1454,7 @@ elif page == "🎯 Strategy & Target List":
                         st.dataframe(sug_h[h_c], use_container_width=True, hide_index=True)
                     if not sug_p.empty:
                         st.markdown("**Pitcher targets:**")
-                        p_c = [c for c in ["Name","Team","composite","ERA","xFIP","K%"] if c in sug_p.columns]
+                        p_c = [c for c in ["Name","Team","composite","W","SV","ERA","xFIP","K%"] if c in sug_p.columns]
                         st.dataframe(sug_p[p_c], use_container_width=True, hide_index=True)
         st.markdown("---"); st.markdown("#### 🔍 Category Gap Finder")
         if st.session_state.targets:
@@ -1302,7 +1463,7 @@ elif page == "🎯 Strategy & Target List":
             gap_rows = []
             for cat, (src, col) in {"HR":(bat_rec,"z_HR"),"R":(bat_rec,"z_R"),"RBI":(bat_rec,"z_RBI"),
                 "SB":(bat_rec,"z_SB"),"AVG":(bat_rec,"z_AVG"),"W":(pit_rec,"z_W"),
-                "ERA":(pit_rec,"z_ERA"),"WHIP":(pit_rec,"z_WHIP"),"K":(pit_rec,"z_K")}.items():
+                "SV":(pit_rec,"z_SV"),"ERA":(pit_rec,"z_ERA"),"WHIP":(pit_rec,"z_WHIP"),"K":(pit_rec,"z_K")}.items():
                 chunk = my_h_df if cat in ["HR","R","RBI","SB","AVG"] else my_p_df
                 if col in chunk.columns and len(chunk)>0:
                     avg_z = chunk[col].mean()
@@ -1386,7 +1547,7 @@ elif page == "🎯 Strategy & Target List":
             if p_targets:
                 st.markdown("#### Pitcher Comparison")
                 p_df = pit_rec[pit_rec["Name"].isin([t["name"] for t in p_targets])]
-                cc = [c for c in ["Name","Team","composite","W","ERA","WHIP","SO","xFIP","SIERA","K%","SwStr%","LOB%"] if c in p_df.columns]
+                cc = [c for c in ["Name","Team","composite","W","SV","ERA","WHIP","SO","xFIP","SIERA","K%","SwStr%","LOB%"] if c in p_df.columns]
                 st.dataframe(p_df[cc].sort_values("composite",ascending=False).style.background_gradient(subset=["composite"],cmap="RdYlGn"), use_container_width=True, hide_index=True)
 
 
@@ -1409,12 +1570,13 @@ elif page == "⚙️ Weight Dashboard":
     }
     default_pitcher_weights = {
         "W":    {"W":1.0},
+        "SV":   {"SV":1.0},
         "ERA":  {"ERA":0.6,"xFIP":0.6,"SIERA":0.5},
         "WHIP": {"WHIP":0.8,"BB%":0.5},
         "K":    {"SO":1.0,"K%":0.8,"SwStr%":0.5},
     }
     default_cat_weights_h = {"HR":1.0,"R":1.0,"RBI":1.0,"SB":1.0,"AVG":1.0}
-    default_cat_weights_p = {"W":1.0,"ERA":1.0,"WHIP":1.0,"K":1.0}
+    default_cat_weights_p = {"W":1.0,"SV":1.0,"ERA":1.0,"WHIP":1.0,"K":1.0}
 
     if "hw"  not in st.session_state: st.session_state.hw  = {cat:dict(s) for cat,s in default_hitter_weights.items()}
     if "pw"  not in st.session_state: st.session_state.pw  = {cat:dict(s) for cat,s in default_pitcher_weights.items()}
@@ -1483,15 +1645,16 @@ elif page == "⚙️ Weight Dashboard":
     with tab_pw:
         st.markdown("### 🎯 Pitcher Stat Weights")
         st.markdown("#### Category Importance")
-        cw_cols_p = st.columns(4)
-        for i, cat in enumerate(["W","ERA","WHIP","K"]):
-            st.session_state.cwp[cat] = cw_cols_p[i].slider(f"{cat} importance",0.0,3.0,float(st.session_state.cwp[cat]),0.25,key=f"cwp_{cat}")
+        cw_cols_p = st.columns(5)
+        for i, cat in enumerate(["W","SV","ERA","WHIP","K"]):
+            st.session_state.cwp[cat] = cw_cols_p[i].slider(f"{cat} importance",0.0,3.0,float(st.session_state.cwp.get(cat,1.0)),0.25,key=f"cwp_{cat}")
         st.markdown("---"); st.markdown("#### Stat-Level Weights")
         stat_info_p = {
-            "W":{"W":"Raw win count"},
+            "W":  {"W":"Raw win count"},
+            "SV": {"SV":"Raw save count"},
             "ERA":{"ERA":"ERA (lower=better)","xFIP":"xFIP (lower=better)","SIERA":"SIERA (lower=better)"},
             "WHIP":{"WHIP":"WHIP (lower=better)","BB%":"Walk rate (lower=better)"},
-            "K":{"SO":"Raw strikeout count","K%":"Strikeout rate","SwStr%":"Swinging strike rate"},
+            "K":  {"SO":"Raw strikeout count","K%":"Strikeout rate","SwStr%":"Swinging strike rate"},
         }
         for cat, stats in default_pitcher_weights.items():
             with st.expander(f"**{cat}** category weights", expanded=True):
@@ -1531,7 +1694,7 @@ elif page == "⚙️ Weight Dashboard":
             cp = custom_score_pitchers(pit_rec.drop(columns=["composite","rank"],errors="ignore"), st.session_state.pw, st.session_state.cwp)
             dr = pit_rec[["Name","composite","rank"]].rename(columns={"composite":"default_composite","rank":"default_rank"})
             cp = cp.merge(dr, on="Name", how="left"); cp["rank_change"] = cp["default_rank"] - cp["rank"]; cp = cp.sort_values("rank")
-            sc = [c for c in ["Name","Team","rank","composite","default_rank","default_composite","rank_change","W","ERA","WHIP","SO","xFIP","SIERA","K%","z_W","z_ERA","z_WHIP","z_K"] if c in cp.columns]
+            sc = [c for c in ["Name","Team","rank","composite","default_rank","default_composite","rank_change","W","SV","ERA","WHIP","SO","xFIP","SIERA","K%","z_W","z_SV","z_ERA","z_WHIP","z_K"] if c in cp.columns]
             st.dataframe(cp[sc].head(50).style.map(style_rc,subset=["rank_change"]).map(style_z,subset=[c for c in sc if c.startswith("z_")]).background_gradient(subset=["composite"],cmap="RdYlGn").format({"composite":"{:.2f}","default_composite":"{:.2f}","rank_change":"{:+d}"}), use_container_width=True, height=520)
             wdf_p = pd.DataFrame({"Category":list(st.session_state.cwp.keys()),"Your Weight":list(st.session_state.cwp.values()),"Default":[1.0]*len(st.session_state.cwp)})
             fig_wp = px.bar(wdf_p.melt("Category",var_name="Type",value_name="Weight"),x="Category",y="Weight",color="Type",barmode="group",template="plotly_dark",color_discrete_sequence=["#4fc3f7","#666"],title="Category Importance Weights")
@@ -1580,7 +1743,7 @@ elif page == "🏟️ Draft Room":
         with tab_p:
             avail_p = pit_rec[~pit_rec["Name"].isin(st.session_state.drafted_p)].sort_values("composite",ascending=False).reset_index(drop=True)
             avail_p.index += 1
-            show_p = [c for c in ["Name","Team","composite","W","ERA","WHIP","SO","xFIP","SIERA","K%","z_W","z_ERA","z_WHIP","z_K"] if c in avail_p.columns]
+            show_p = [c for c in ["Name","Team","composite","W","SV","ERA","WHIP","SO","xFIP","SIERA","K%","z_W","z_SV","z_ERA","z_WHIP","z_K"] if c in avail_p.columns]
             st.markdown(f"**{len(avail_p)} pitchers available**")
             st.dataframe(avail_p[show_p].style.map(style_z,subset=[c for c in show_p if c.startswith("z_")]).background_gradient(subset=["composite"],cmap="RdYlGn"), use_container_width=True, height=420)
             pick_p = st.selectbox("Select pitcher", [""]+avail_p["Name"].tolist(), key="sel_p")
@@ -2207,199 +2370,112 @@ elif page == "🎲 Monte Carlo Sim":
         with tab_season:
             st.markdown("### 📅 Yahoo Fantasy Season Simulator")
             st.caption(
-                "Simulates a full 20-week Yahoo H2H 9-cat season. "
-                "Each week you face one opponent — all 9 categories are scored W, L, or T. "
-                "Season record = cumulative W-L-T across all 180 category slots (20 weeks × 9 cats)."
+                "Uses your actual MC category win probabilities to simulate 20 weeks of H2H matchups. "
+                "Each week: all 9 categories scored W/L/T. Season record = cumulative W-L-T (out of 180)."
             )
 
             ss_col1, ss_col2, ss_col3 = st.columns(3)
-            ss_n_seasons     = ss_col1.slider("Seasons to simulate", 100, 1000, 500, 100, key="ss_n_seasons")
+            ss_n_seasons     = ss_col1.slider("Seasons to simulate", 500, 5000, 1000, 500, key="ss_n_seasons")
             ss_league_sz     = ss_col2.slider("League size", 8, 16, 12, key="ss_league_sz")
             ss_playoff_spots = ss_col3.slider("Playoff spots", 2, 8, 4, key="ss_playoff_spots")
 
             run_season_sim = st.button("🏆 Run Season Simulation", type="primary", key="btn_season_sim")
 
             if run_season_sim:
-                REG_WEEKS = 20
-                N_SIM     = ss_n_seasons
-                N_CATS    = 9
-                N_OPP     = ss_league_sz - 1
-                TOTAL_SLOTS = REG_WEEKS * N_CATS  # 180
+                REG_WEEKS   = 20
+                N_SIM       = ss_n_seasons
+                N_OPP       = ss_league_sz - 1
+                TOTAL_SLOTS = REG_WEEKS * 9   # 180
+                cats_ss     = [c for c in MC_ALL_CATS if c in team_sims.columns]
+                N_CATS      = len(cats_ss)
 
-                cats_ss = [c for c in MC_ALL_CATS if c in team_sims.columns]
+                # ── Step 1: Compute per-category win probability ────────
+                # This reuses the EXACT same logic as the Category Win Odds tab —
+                # compare your MC season draws directly against opponent season draws.
+                # The result is one win probability per category (0.0–1.0) and
+                # one tie probability (when values are equal).
+                with st.spinner("Computing category win probabilities from MC distributions..."):
+                    opp_pool = mc_opponent_pool(
+                        N_OPP,
+                        min(mc_p["n_sim"], 2000),
+                        mc_p.get("run_count", 0)
+                    )
 
-                # ── Weeks per season for counting stats ──────────────────
-                # A 162-game season has ~26 scoring weeks in real life,
-                # but Yahoo runs 20 head-to-head weeks. Each week covers
-                # roughly 162/20 ≈ 8 games per player.
-                # So weekly pace = season_total * (8 games / 162 games) = season / 20.25
-                # We use 20 to match the schedule length exactly.
-                GAMES_PER_WEEK  = 162 / 20   # ~8.1
-                STARTS_PER_WEEK = 32  / 20   # ~1.6 SP starts per week
+                    cat_probs = {}   # {cat: {"win": float, "loss": float, "tie": float}}
+                    for cat in cats_ss:
+                        if cat not in opp_pool:
+                            cat_probs[cat] = {"win": 0.5, "loss": 0.5, "tie": 0.0}
+                            continue
 
-                def player_weekly_dist(name, is_hitter):
-                    """
-                    Return (mu, sd) for each fantasy cat for ONE WEEK of play.
-                    Derived from the player's historical full-season projected means
-                    via _mc_player_dist, scaled to weekly pace.
-                    """
-                    if is_hitter:
-                        dist = _mc_player_dist(name, bat_all, MC_H_STATS)
-                        weekly = {}
-                        scale  = GAMES_PER_WEEK / 162
-                        for cat in ["HR","R","RBI","SB"]:
-                            mu, sd = dist.get(cat, (0.0, 0.5))
-                            wmu = max(mu * scale, 0.0)
-                            # Weekly SD: Poisson-ish → sd ≈ sqrt(mu_weekly * 3)
-                            # but at least 50% of mean for realism
-                            wsd = max(np.sqrt(max(wmu, 0.01) * 3), wmu * 0.5, 0.05)
-                            weekly[cat] = (wmu, wsd)
-                        mu_avg, sd_avg = dist.get("AVG", (0.250, 0.020))
-                        # Weekly AVG has higher variance than season avg (small sample)
-                        weekly["AVG"] = (max(mu_avg, 0.100), max(sd_avg * 2.0, 0.030))
-                    else:
-                        dist = _mc_player_dist(name, pit_all, MC_P_STATS)
-                        weekly = {}
-                        scale_w = STARTS_PER_WEEK / 32
-                        for cat in ["W","SO"]:
-                            mu, sd = dist.get(cat, (0.0, 0.5))
-                            wmu = max(mu * scale_w, 0.0)
-                            wsd = max(np.sqrt(max(wmu, 0.01) * 2), wmu * 0.5, 0.05)
-                            weekly[cat] = (wmu, wsd)
-                        # ERA/WHIP weekly = season rate ± large weekly noise (small IP sample)
-                        mu_era,  sd_era  = dist.get("ERA",  (4.00, 0.50))
-                        mu_whip, sd_whip = dist.get("WHIP", (1.25, 0.10))
-                        weekly["ERA"]  = (max(mu_era,  0.50), max(sd_era  * 2.5, 0.80))
-                        weekly["WHIP"] = (max(mu_whip, 0.60), max(sd_whip * 2.5, 0.15))
-                    return weekly
-
-                # ── Build per-player weekly distributions ─────────────────
-                with st.spinner("Building player weekly projections..."):
-                    my_hitters  = list(mc_p.get("hitters",  []))
-                    my_pitchers = list(mc_p.get("pitchers", []))
-
-                    # My team: weekly (mu, sd) per cat aggregated across roster
-                    # Counting: sum player mus/sds (independent)
-                    # Rate (AVG, ERA, WHIP): weighted average across players
-                    def build_team_weekly(hitters, pitchers):
-                        team = {c: {"mu": 0.0, "sd": 0.0} for c in cats_ss}
-                        # Hitters
-                        h_avg_mus, h_avg_sds = [], []
-                        for name in hitters:
-                            wd = player_weekly_dist(name, True)
-                            for cat in ["HR","R","RBI","SB"]:
-                                if cat in cats_ss:
-                                    mu, sd = wd.get(cat, (0,0))
-                                    team[cat]["mu"] += mu
-                                    team[cat]["sd"]  = np.sqrt(team[cat]["sd"]**2 + sd**2)
-                            if "AVG" in cats_ss:
-                                mu, sd = wd.get("AVG", (0.250, 0.030))
-                                h_avg_mus.append(mu); h_avg_sds.append(sd)
-                        if h_avg_mus and "AVG" in cats_ss:
-                            team["AVG"]["mu"] = np.mean(h_avg_mus)
-                            team["AVG"]["sd"] = np.mean(h_avg_sds) / max(np.sqrt(len(h_avg_mus)) * 0.5, 1)
-                        # Pitchers
-                        era_mus, era_sds, whip_mus, whip_sds = [], [], [], []
-                        for name in pitchers:
-                            wd = player_weekly_dist(name, False)
-                            for cat in ["W","SO"]:
-                                if cat in cats_ss:
-                                    mu, sd = wd.get(cat, (0,0))
-                                    team[cat]["mu"] += mu
-                                    team[cat]["sd"]  = np.sqrt(team[cat]["sd"]**2 + sd**2)
-                            if "ERA" in cats_ss:
-                                mu, sd = wd.get("ERA", (4.00, 1.00))
-                                era_mus.append(mu); era_sds.append(sd)
-                            if "WHIP" in cats_ss:
-                                mu, sd = wd.get("WHIP", (1.25, 0.20))
-                                whip_mus.append(mu); whip_sds.append(sd)
-                        if era_mus and "ERA" in cats_ss:
-                            team["ERA"]["mu"]  = np.mean(era_mus)
-                            team["ERA"]["sd"]  = np.mean(era_sds) / max(np.sqrt(len(era_mus)) * 0.5, 1)
-                        if whip_mus and "WHIP" in cats_ss:
-                            team["WHIP"]["mu"] = np.mean(whip_mus)
-                            team["WHIP"]["sd"] = np.mean(whip_sds) / max(np.sqrt(len(whip_mus)) * 0.5, 1)
-                        return team
-
-                    my_team_wk = build_team_weekly(my_hitters, my_pitchers)
-
-                    # ── Build opponent teams ────────────────────────────────
-                    # Draw N_OPP random rosters from the full player pool
-                    all_h_pool = bat_all["Name"].dropna().unique().tolist()
-                    all_p_pool = pit_all["Name"].dropna().unique().tolist()
-                    n_h = max(len(my_hitters), 6)
-                    n_p = max(len(my_pitchers), 3)
-
-                    opp_teams_wk = []
-                    for _ in range(N_OPP):
-                        oh = list(np.random.choice(all_h_pool, size=min(n_h, len(all_h_pool)), replace=False))
-                        op = list(np.random.choice(all_p_pool, size=min(n_p, len(all_p_pool)), replace=False))
-                        opp_teams_wk.append(build_team_weekly(oh, op))
-
-                # ── Simulate N_SIM seasons ────────────────────────────────
-                with st.spinner(f"Simulating {N_SIM} seasons × {REG_WEEKS} weeks..."):
-                    # cat_wlt[sim, week, cat] = +1 W, -1 L, 0 T
-                    cat_wlt = np.zeros((N_SIM, REG_WEEKS, len(cats_ss)), dtype=np.int8)
-
-                    for wi in range(REG_WEEKS):
-                        # Each sim faces a random opponent this week
-                        opp_idx = np.random.randint(0, N_OPP, size=N_SIM)
-
-                        for ci, cat in enumerate(cats_ss):
-                            my_mu = my_team_wk[cat]["mu"]
-                            my_sd = max(my_team_wk[cat]["sd"], 0.01)
-
-                            # Draw N_SIM weekly values for my team
-                            if cat == "AVG":
-                                my_v = np.clip(np.random.normal(my_mu, my_sd, N_SIM), 0.100, 0.450)
-                            elif cat == "ERA":
-                                my_v = np.clip(np.random.normal(my_mu, my_sd, N_SIM), 0.50, 15.0)
-                            elif cat == "WHIP":
-                                my_v = np.clip(np.random.normal(my_mu, my_sd, N_SIM), 0.60, 3.0)
-                            else:
-                                my_v = np.clip(np.random.normal(my_mu, my_sd, N_SIM), 0.0, None)
-
-                            # Each sim draws from its specific opponent's distribution
-                            op_mus = np.array([opp_teams_wk[oi][cat]["mu"] for oi in opp_idx])
-                            op_sds = np.array([max(opp_teams_wk[oi][cat]["sd"], 0.01) for oi in opp_idx])
-                            noise  = np.random.normal(0, 1, N_SIM)
-
-                            if cat == "AVG":
-                                op_v = np.clip(op_mus + noise * op_sds, 0.100, 0.450)
-                            elif cat == "ERA":
-                                op_v = np.clip(op_mus + noise * op_sds, 0.50, 15.0)
-                            elif cat == "WHIP":
-                                op_v = np.clip(op_mus + noise * op_sds, 0.60, 3.0)
-                            else:
-                                op_v = np.clip(op_mus + noise * op_sds, 0.0, None)
-
-                            # Compare: tie if within tolerance
-                            tol = 0.002 if cat in {"AVG","ERA","WHIP"} else 1e-6
+                        my_v   = team_sims[cat].values
+                        # Compare against every opponent — each opponent has N_SIM draws
+                        win_rates, tie_rates = [], []
+                        for opp_draws in opp_pool[cat]:
+                            n = min(len(my_v), len(opp_draws))
+                            mv = my_v[:n]
+                            ov = opp_draws[:n]
                             if cat in MC_LOWER_BETTER:
-                                win  = my_v < op_v - tol
-                                loss = my_v > op_v + tol
+                                w = float(np.mean(mv < ov))
+                                t = float(np.mean(mv == ov))
                             else:
-                                win  = my_v > op_v + tol
-                                loss = my_v < op_v - tol
-                            cat_wlt[:, wi, ci] = np.where(win, 1, np.where(loss, -1, 0)).astype(np.int8)
+                                w = float(np.mean(mv > ov))
+                                t = float(np.mean(mv == ov))
+                            win_rates.append(w)
+                            tie_rates.append(t)
 
-                # ── Aggregates ─────────────────────────────────────────────
-                season_W = (cat_wlt ==  1).sum(axis=(1,2)).astype(int)   # (N_SIM,)
+                        p_win  = float(np.mean(win_rates))
+                        p_tie  = max(float(np.mean(tie_rates)), 0.02)   # at least 2% tie rate
+                        p_loss = max(1.0 - p_win - p_tie, 0.0)
+                        # Normalise to sum to 1
+                        total  = p_win + p_tie + p_loss
+                        cat_probs[cat] = {
+                            "win":  p_win  / total,
+                            "tie":  p_tie  / total,
+                            "loss": p_loss / total,
+                        }
+
+                # ── Step 2: Simulate N_SIM seasons × 20 weeks ──────────
+                # Each week: for each of 9 categories, draw W/T/L from the
+                # multinomial distribution defined by that category's probabilities.
+                # This correctly reflects:
+                #   - Roster quality (win probs come from real MC distributions)
+                #   - Week-to-week variance (each week is an independent draw)
+                #   - Ties (explicitly modelled)
+                #   - Category independence (each cat drawn separately)
+                with st.spinner(f"Simulating {N_SIM:,} seasons × {REG_WEEKS} weeks..."):
+                    # cat_wlt[sim, week, cat_idx] = +1 W / 0 T / -1 L
+                    cat_wlt = np.zeros((N_SIM, REG_WEEKS, N_CATS), dtype=np.int8)
+
+                    for ci, cat in enumerate(cats_ss):
+                        p_w = cat_probs[cat]["win"]
+                        p_t = cat_probs[cat]["tie"]
+                        p_l = cat_probs[cat]["loss"]
+
+                        # Draw N_SIM × REG_WEEKS outcomes at once from multinomial
+                        # multinomial returns counts per outcome — flatten to per-slot
+                        outcomes = np.random.choice(
+                            [1, 0, -1],
+                            size=(N_SIM, REG_WEEKS),
+                            p=[p_w, p_t, p_l]
+                        )
+                        cat_wlt[:, :, ci] = outcomes.astype(np.int8)
+
+                # ── Step 3: Aggregate ───────────────────────────────────
+                season_W = (cat_wlt ==  1).sum(axis=(1,2)).astype(int)
                 season_L = (cat_wlt == -1).sum(axis=(1,2)).astype(int)
                 season_T = (cat_wlt ==  0).sum(axis=(1,2)).astype(int)
 
-                cat_win_rates  = (cat_wlt ==  1).mean(axis=(0,1))   # (N_CATS,)
+                cat_win_rates  = (cat_wlt ==  1).mean(axis=(0,1))
                 cat_loss_rates = (cat_wlt == -1).mean(axis=(0,1))
                 cat_tie_rates  = (cat_wlt ==  0).mean(axis=(0,1))
 
-                wk_cat_wins    = (cat_wlt == 1).sum(axis=2)          # (N_SIM, REG_WEEKS)
-                wk_avg_cats    = wk_cat_wins.mean(axis=0)            # (REG_WEEKS,)
+                wk_cat_wins = (cat_wlt == 1).sum(axis=2)    # (N_SIM, REG_WEEKS)
+                wk_avg_cats = wk_cat_wins.mean(axis=0)       # (REG_WEEKS,) avg cats won per week
 
-                playoff_cutoff = np.percentile(season_W,
-                    (1 - ss_playoff_spots / ss_league_sz) * 100)
+                playoff_cutoff = np.percentile(season_W, (1 - ss_playoff_spots/ss_league_sz)*100)
                 playoff_rate   = float((season_W >= playoff_cutoff).mean())
 
-                # ── Display ────────────────────────────────────────────────
+                # ── Display ─────────────────────────────────────────────
                 st.markdown("---")
                 med_W  = float(np.median(season_W))
                 med_L  = float(np.median(season_L))
@@ -2408,51 +2484,58 @@ elif page == "🎲 Monte Carlo Sim":
                 p90_W  = float(np.percentile(season_W, 90))
                 win_pct = med_W / TOTAL_SLOTS * 100
 
+                # Show the per-cat win probs used — key sanity check
+                with st.expander("📊 Category win probabilities used in simulation"):
+                    prob_rows = [{"Category": cat,
+                                  "Win %": f"{cat_probs[cat]['win']*100:.1f}%",
+                                  "Tie %": f"{cat_probs[cat]['tie']*100:.1f}%",
+                                  "Loss %": f"{cat_probs[cat]['loss']*100:.1f}%"}
+                                 for cat in cats_ss]
+                    st.dataframe(pd.DataFrame(prob_rows), hide_index=True, use_container_width=True)
+
                 sm1, sm2, sm3, sm4, sm5 = st.columns(5)
                 sm1.metric("Median Season Record",  f"{int(med_W)}-{int(med_L)}-{int(med_T)}")
                 sm2.metric("Win Range (P10–P90)",   f"{int(p10_W)}–{int(p90_W)} W")
                 sm3.metric("Win % (cat basis)",     f"{win_pct:.1f}%")
                 sm4.metric("Avg Cat Wins / Week",   f"{wk_avg_cats.mean():.1f} / 9")
-                sm5.metric("Est. Playoff %",        f"{playoff_rate*100:.1f}%")
+                sm5.metric("Est. Playoff %",        f"{playoff_rate*100:.1f}%",
+                    help=f"Top {ss_playoff_spots} of {ss_league_sz} by total cat wins")
 
-                # Show team weekly mu values so user can sanity-check
-                with st.expander("🔍 Your team's weekly projected averages (sanity check)"):
-                    sanity = {cat: f"μ={my_team_wk[cat]['mu']:.3f}  σ={my_team_wk[cat]['sd']:.3f}"
-                              for cat in cats_ss}
-                    st.json(sanity)
-
-                # Win distribution
+                # Distribution histogram
                 st.markdown("#### 📊 Season Category-Win Distribution")
                 fig_wins = go.Figure()
-                fig_wins.add_trace(go.Histogram(x=season_W, nbinsx=40,
-                    marker_color="#4fc3f7", showlegend=False))
+                fig_wins.add_trace(go.Histogram(
+                    x=season_W, nbinsx=50,
+                    marker_color="#4fc3f7", showlegend=False,
+                    hovertemplate="Cat Wins: %{x}<br>Seasons: %{y}<extra></extra>"))
                 fig_wins.add_vline(x=med_W, line_dash="dash", line_color="yellow",
-                    annotation_text=f"Median {int(med_W)}W")
+                    annotation_text=f"Median {int(med_W)}W", annotation_position="top right")
                 fig_wins.add_vrect(x0=p10_W, x1=p90_W,
-                    fillcolor="rgba(79,195,247,0.07)", line_width=0)
+                    fillcolor="rgba(79,195,247,0.07)", line_width=0,
+                    annotation_text="P10–P90", annotation_position="top left")
                 fig_wins.add_vline(x=playoff_cutoff, line_dash="dot", line_color="#21C354",
                     annotation_text=f"~Playoff ({int(playoff_cutoff)}W)",
                     annotation_font_color="#21C354")
                 fig_wins.add_vline(x=TOTAL_SLOTS/2, line_dash="dash",
                     line_color="gray", opacity=0.4, annotation_text=".500")
-                fig_wins.update_layout(template="plotly_dark", height=260,
+                fig_wins.update_layout(template="plotly_dark", height=270,
                     xaxis_title=f"Total Category Wins (out of {TOTAL_SLOTS})",
                     yaxis_title="Simulated Seasons", margin=dict(l=40,r=20,t=20,b=40))
                 st.plotly_chart(fig_wins, use_container_width=True)
 
-                # Per-cat W-L-T
+                # Per-category record table
                 st.markdown("---")
                 st.markdown("#### 🏅 Per-Category Season Record")
+                st.caption(f"Expected W-L-T per category across all {REG_WEEKS} weeks.")
                 cat_rec_df = pd.DataFrame({
                     "Category":  cats_ss,
                     "Avg W":     [round(r * REG_WEEKS, 1) for r in cat_win_rates],
                     "Avg L":     [round(r * REG_WEEKS, 1) for r in cat_loss_rates],
                     "Avg T":     [round(r * REG_WEEKS, 1) for r in cat_tie_rates],
                     "Win %":     [round(r * 100, 1) for r in cat_win_rates],
-                    "My μ/wk":   [round(my_team_wk[c]["mu"], 3 if c=="AVG" else 2) for c in cats_ss],
                     "Assessment":[
                         "💪 Dominant" if r >= 0.65 else "✅ Solid" if r >= 0.52 else
-                        "⚖️ Toss-up" if r >= 0.46 else "⚠️ Weak"  if r >= 0.35 else "🚨 Punt"
+                        "⚖️ Toss-up" if r >= 0.46 else "⚠️ Weak" if r >= 0.35 else "🚨 Punt"
                         for r in cat_win_rates]
                 }).sort_values("Win %", ascending=False)
 
@@ -2475,15 +2558,17 @@ elif page == "🎲 Monte Carlo Sim":
                     marker_color=["#21C354" if v>=52 else "#FFA500" if v>=46 else "#FF4B4B"
                                   for v in cat_rec_df["Win %"]],
                     text=[f"{v:.1f}%" for v in cat_rec_df["Win %"]], textposition="outside"))
-                fig_catbar.add_hline(y=50, line_dash="dash", line_color="gray", opacity=0.5)
+                fig_catbar.add_hline(y=50, line_dash="dash", line_color="gray", opacity=0.5,
+                    annotation_text="50%")
                 fig_catbar.update_layout(template="plotly_dark", height=280,
                     yaxis=dict(range=[0,105], title="Category Win %"),
-                    margin=dict(t=10,b=40))
+                    margin=dict(t=10, b=40))
                 st.plotly_chart(fig_catbar, use_container_width=True)
 
-                # Avg cats won per week
+                # Week-by-week avg cats won
                 st.markdown("---")
                 st.markdown("#### 📆 Avg Category Wins per Week")
+                st.caption("Should hover around your overall win rate. Week-to-week variance comes from the random draw.")
                 fig_wk = go.Figure(go.Bar(
                     x=list(range(1, REG_WEEKS+1)), y=wk_avg_cats,
                     marker_color=["#21C354" if v>=5.0 else "#FFA500" if v>=4.0 else "#FF4B4B"
@@ -2494,44 +2579,42 @@ elif page == "🎲 Monte Carlo Sim":
                 fig_wk.update_layout(template="plotly_dark", height=270,
                     xaxis=dict(title="Week", dtick=1),
                     yaxis=dict(range=[0,9.5], title="Avg Cats Won (out of 9)"),
-                    margin=dict(l=40,r=20,t=10,b=40))
+                    margin=dict(l=40, r=20, t=10, b=40))
                 st.plotly_chart(fig_wk, use_container_width=True)
 
                 # Sample scoreboard
                 st.markdown("---")
                 st.markdown("#### 📋 Sample Season Scoreboard")
-                s = 0
+                st.caption("One randomly selected simulated season showing weekly W-L-T scores.")
                 cum_W = cum_L = cum_T = 0
                 sb_rows = []
                 for wi in range(REG_WEEKS):
-                    wW = int((cat_wlt[s,wi,:]==1).sum())
-                    wL = int((cat_wlt[s,wi,:]==-1).sum())
-                    wT = int((cat_wlt[s,wi,:]==0).sum())
-                    cum_W+=wW; cum_L+=wL; cum_T+=wT
-                    sb_rows.append({"Week":f"Week {wi+1}",
-                        "Weekly Score":f"{wW}-{wL}-{wT}",
-                        "Cumulative":f"{cum_W}-{cum_L}-{cum_T}"})
+                    wW = int((cat_wlt[0, wi, :] ==  1).sum())
+                    wL = int((cat_wlt[0, wi, :] == -1).sum())
+                    wT = int((cat_wlt[0, wi, :] ==  0).sum())
+                    cum_W += wW; cum_L += wL; cum_T += wT
+                    sb_rows.append({"Week": f"Wk {wi+1}",
+                                    "Score": f"{wW}-{wL}-{wT}",
+                                    "Cumulative": f"{cum_W}-{cum_L}-{cum_T}"})
                 sb_df = pd.DataFrame(sb_rows)
                 def _sw(val):
                     try:
-                        w=int(str(val).split("-")[0])
-                        if w>=6: return "color:#21C354;font-weight:bold"
-                        if w>=5: return "color:#21C354"
-                        if w==4: return "color:#FFA500"
+                        w = int(str(val).split("-")[0])
+                        if w >= 6: return "color:#21C354; font-weight:bold"
+                        if w >= 5: return "color:#21C354"
+                        if w == 4: return "color:#FFA500"
                         return "color:#FF4B4B"
                     except: return ""
-                st.dataframe(sb_df.style.map(_sw, subset=["Weekly Score"]),
+                st.dataframe(sb_df.style.map(_sw, subset=["Score"]),
                     use_container_width=True, hide_index=True, height=580)
-                st.caption(f"Final: **{cum_W}-{cum_L}-{cum_T}** out of {REG_WEEKS*N_CATS} total category slots")
+                st.caption(f"Sample final: **{cum_W}-{cum_L}-{cum_T}** out of {TOTAL_SLOTS}")
 
             else:
                 st.info("👆 Run your Monte Carlo sim first, then click **🏆 Run Season Simulation**.")
                 st.markdown("""
                 **How it works:**
-                - Each player's weekly projected stats are built directly from their historical data
-                  (season totals ÷ 20 weeks, with realistic week-to-week variance)
-                - Opponents are randomly constructed teams from the full player pool
-                - Each week, your team's 9 categories are independently compared vs that week's opponent
-                - Each category = W, L, or T — season record is the cumulative total across all 180 slots
-                - Swapping a star for a scrub will noticeably move HR/R/RBI rates
+                - Computes per-category win/tie/loss probabilities from your actual MC distributions vs real simulated opponents (same as the Category Win Odds tab)
+                - Simulates 20 independent weekly matchups using those probabilities — each week each of 9 categories draws W, T, or L
+                - Swapping a player changes your MC distributions → changes the win probabilities → changes the season record
+                - Season record = cumulative W-L-T across all 180 category slots (20 weeks × 9 cats)
                 """)
