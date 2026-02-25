@@ -324,28 +324,68 @@ MC_P_STATS      = ["W","SV","ERA","WHIP","SO","K%","xFIP","SIERA","BB%","SwStr%"
 
 
 def _mc_player_dist(name, src_df, stat_cols):
-    """Build (mean, std) for each stat, normalising partial seasons to full-season equivalents."""
+    """Build (mean, std) for each stat, normalising partial seasons to full-season equivalents.
+
+    Role detection:
+    - Starter:  avg GS >= 10  → scale to 32 GS / 180 IP
+    - Reliever: avg GS <  10  → scale to 70 IP (realistic full-season reliever workload)
+      This prevents relievers from being projected as 200-IP starters just because
+      they appeared in 60+ games.
+    """
     hist = src_df[src_df["Name"] == name].copy()
     if hist.empty:
         return {s: (0.0, 0.0) for s in stat_cols}
 
     counting = {"HR","R","RBI","SB","W","SV","SO","BB","G","GS","IP","PA"}
-    full_g, full_gs, full_pa, full_ip = 162, 32, 650, 180
+
+    # Determine role from historical data
+    full_g, full_gs, full_pa = 162, 32, 650
+    is_pitcher = "GS" in src_df.columns
+
+    if is_pitcher:
+        avg_gs = hist["GS"].fillna(0).mean() if "GS" in hist.columns else 0
+        is_starter = avg_gs >= 10
+        full_ip = 180 if is_starter else 70   # starters ~180 IP, relievers ~70 IP
+    else:
+        is_starter = False
+        full_ip = 180
 
     scaled_rows = []
     for _, row in hist.iterrows():
         row = row.copy()
-        g  = row.get("G",  full_g);  gs = row.get("GS", full_gs)
-        pa = row.get("PA", full_pa); ip = row.get("IP", full_ip)
-        if "GS" in src_df.columns and not pd.isna(gs) and gs > 0:
-            scale = full_gs / max(gs, 1)
-        elif "PA" in src_df.columns and not pd.isna(pa) and pa > 0:
-            scale = full_pa / max(pa, 1)
-        elif not pd.isna(g) and g > 0:
-            scale = full_g  / max(g,  1)
+        g  = row.get("G",  full_g)
+        gs = row.get("GS", 0) if is_pitcher else row.get("GS", full_gs)
+        pa = row.get("PA", full_pa)
+        ip = row.get("IP", full_ip)
+
+        if not is_pitcher:
+            # Hitter: scale by PA
+            if not pd.isna(pa) and pa > 0:
+                scale = full_pa / max(pa, 1)
+            elif not pd.isna(g) and g > 0:
+                scale = full_g / max(g, 1)
+            else:
+                scale = 1.0
+        elif is_starter:
+            # SP: scale by GS if available, else IP
+            if not pd.isna(gs) and gs > 0:
+                scale = full_gs / max(gs, 1)
+            elif not pd.isna(ip) and ip > 0:
+                scale = full_ip / max(ip, 1)
+            else:
+                scale = 1.0
         else:
-            scale = 1.0
-        scale = min(scale, 2.5)
+            # Reliever: always scale by IP to reliever full-season ceiling
+            if not pd.isna(ip) and ip > 0:
+                scale = full_ip / max(ip, 1)
+            elif not pd.isna(g) and g > 0:
+                # Approx: relievers average ~1 IP/game
+                est_ip = g * 1.0
+                scale = full_ip / max(est_ip, 1)
+            else:
+                scale = 1.0
+
+        scale = min(scale, 3.0)
         for s in stat_cols:
             if s in counting and s in row.index and pd.notna(row[s]):
                 row[s] = row[s] * scale
@@ -369,6 +409,16 @@ def _mc_player_dist(name, src_df, stat_cols):
             mu = float(vals.mean()); sd = float(vals.std())
             sd = min(sd, max(abs(mu) * 0.25, 0.5))
             out[s] = (mu, sd)
+
+    # Hard caps for relievers — even after scaling, projections shouldn't
+    # exceed realistic reliever ceilings (70 IP × ~10 K/9 ≈ 78 SO max elite)
+    if is_pitcher and not is_starter:
+        RP_CAPS = {"SO": 90, "W": 8, "IP": 75}
+        for s, cap in RP_CAPS.items():
+            if s in out:
+                mu, sd = out[s]
+                out[s] = (min(mu, cap), min(sd, cap * 0.25))
+
     return out
 
 
