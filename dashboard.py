@@ -386,9 +386,27 @@ def _mc_player_dist(name, src_df, stat_cols):
                 scale = 1.0
 
         scale = min(scale, 3.0)
+
+        # SV is opportunity-based, not IP-based — scale by games appeared (G),
+        # targeting a full-season closer workload of ~65 appearances.
+        # A closer with 35 SV in 60 G should project ~38 SV (35 * 65/60), not get
+        # deflated by the IP scaler which would shrink their saves along with SO/W.
+        if is_pitcher and not is_starter and "SV" in stat_cols and "G" in row.index:
+            sv_g   = row.get("G", None)
+            sv_val = row.get("SV", None)
+            full_closer_g = 65
+            if sv_val is not None and pd.notna(sv_val) and sv_g is not None and pd.notna(sv_g) and sv_g > 0:
+                sv_scale = min(full_closer_g / max(sv_g, 1), 2.0)
+            else:
+                sv_scale = scale  # fallback to IP scale
+
         for s in stat_cols:
             if s in counting and s in row.index and pd.notna(row[s]):
-                row[s] = row[s] * scale
+                # Use appearance-based scale for SV on relievers, IP-based for everything else
+                if s == "SV" and is_pitcher and not is_starter:
+                    row[s] = row[s] * sv_scale
+                else:
+                    row[s] = row[s] * scale
         scaled_rows.append(row)
 
     if not scaled_rows:
@@ -410,14 +428,27 @@ def _mc_player_dist(name, src_df, stat_cols):
             sd = min(sd, max(abs(mu) * 0.25, 0.5))
             out[s] = (mu, sd)
 
-    # Hard caps for relievers — even after scaling, projections shouldn't
-    # exceed realistic reliever ceilings (70 IP × ~10 K/9 ≈ 78 SO max elite)
+    # Hard caps for relievers
     if is_pitcher and not is_starter:
-        RP_CAPS = {"SO": 90, "W": 8, "IP": 75}
+        # SO/W/IP caps prevent IP-scaling inflation
+        # SV has its own ceiling — elite closers max out ~45 saves
+        RP_CAPS = {"SO": 90, "W": 8, "IP": 75, "SV": 48}
         for s, cap in RP_CAPS.items():
             if s in out:
                 mu, sd = out[s]
                 out[s] = (min(mu, cap), min(sd, cap * 0.25))
+
+        # SV floor: if player has meaningful save history (avg > 2), preserve it
+        # Don't let the IP scaler drag saves down to near-zero for real closers
+        if "SV" in out:
+            hist_sv = hist["SV"].dropna() if "SV" in hist.columns else pd.Series([], dtype=float)
+            if len(hist_sv) > 0 and hist_sv.mean() > 2:
+                raw_mu = float(hist_sv.mean())  # unscaled historical average
+                scaled_mu = out["SV"][0]
+                # Use whichever is higher — raw history or scaled projection
+                # (prevents deflation from partial-season scaling)
+                best_mu = max(scaled_mu, raw_mu * 0.85)
+                out["SV"] = (min(best_mu, 48), out["SV"][1])
 
     return out
 
