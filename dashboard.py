@@ -458,129 +458,203 @@ def _mc_apply_sabermetrics(name, dist, src_df, is_hitter, saber_weight, lg_h, lg
     Adjust projected means using sabermetric indicators.
     saber_weight 0.0 = pure counting-stat history, 1.0 = fully sabermetric-adjusted.
 
-    Hitters
-    -------
-    HR   : Barrel% z-score continuously scales HR mean (+/- up to 20%)
-    R    : wRC+ z-score scales R mean (+/- up to 15%)
-    RBI  : wOBA z-score scales RBI mean (+/- up to 15%)
-    SB   : Spd score z-score scales SB mean (+/- up to 20%)
-    AVG  : xwOBA-wOBA gap nudges AVG mean; xBA-AVG gap also applied
+    Uses a weighted average of recent seasons (more recent = higher weight) rather
+    than just latest season, making adjustments more stable.
 
-    Pitchers
-    --------
-    ERA  : blended toward xFIP/SIERA (luck correction)
-    WHIP : K-BB% z-score scales WHIP mean; GB% bonus for groundballers
-    SO   : SwStr% z-score continuously scales SO mean (+/- up to 15%)
-    W    : K/9 and GB% adjust slightly (sustainable wins indicator)
+    Adjustment magnitudes are calibrated to produce noticeable but realistic shifts:
+    - A 2-sigma elite Barrel% player gets +30-35% HR boost at full saber_weight
+    - A pitcher with xFIP 1.0 better than ERA gets that ERA corrected ~100% at sw=1.0
     """
     if saber_weight <= 0:
         return dist
 
-    hist = src_df[src_df["Name"] == name]
+    hist = src_df[src_df["Name"] == name].copy()
     if hist.empty:
         return dist
 
-    latest = hist.sort_values("Season").iloc[-1]
+    # Weighted average across seasons — most recent gets highest weight
+    hist = hist.sort_values("Season")
+    n = len(hist)
+    weights = np.array([1.5**i for i in range(n)], dtype=float)
+    weights /= weights.sum()
 
-    def _safe(col):
-        v = latest.get(col, np.nan)
-        return float(v) if pd.notna(v) else None
+    def _wavg(col):
+        """Weighted average of a column across seasons."""
+        if col not in hist.columns: return None
+        vals = hist[col].values.astype(float)
+        mask = ~np.isnan(vals)
+        if mask.sum() == 0: return None
+        w = weights.copy(); w[~mask] = 0
+        if w.sum() == 0: return None
+        return float(np.dot(vals * mask, w / w.sum()))
 
-    def _z(val, mu, sd):
+    def _zs(val, mu, sd):
+        """Z-score helper."""
+        if val is None or mu is None: return 0.0
         if sd and sd > 0: return (val - mu) / sd
         return 0.0
 
-    def _adjust(dist, stat, factor):
-        """Blend current mean with sabermetric-adjusted mean."""
+    def _blend(dist, stat, adj_mu, clip_lo=None, clip_hi=None):
+        """
+        Blend raw projection mean with sabermetric-adjusted mean.
+        adj_mu is the fully-adjusted target; saber_weight controls the mix.
+        """
         if stat not in dist: return dist
         mu, sd = dist[stat]
-        adj_mu = mu * factor
         blended = mu * (1 - saber_weight) + adj_mu * saber_weight
+        if clip_lo is not None or clip_hi is not None:
+            blended = float(np.clip(blended, clip_lo or -np.inf, clip_hi or np.inf))
         dist[stat] = (blended, sd)
         return dist
 
     if is_hitter:
-        # ── HR: Barrel% ──────────────────────────────────────
-        barrel  = _safe("Barrel%"); lg_barrel = lg_h.get("Barrel%", 0.08)
-        sd_barrel = 0.04
-        if barrel is not None:
-            bz = _z(barrel, lg_barrel, sd_barrel)
-            factor = 1.0 + np.clip(bz * 0.08, -0.20, 0.20)   # ±20% max
-            dist = _adjust(dist, "HR", factor)
+        # ── HR: Barrel% is the strongest HR predictor ────────
+        # A 2-sigma elite Barrel% player (e.g. 16% vs 8% avg) gets +35% HR
+        barrel   = _wavg("Barrel%")
+        lg_barrel = lg_h.get("Barrel%", 0.08)
+        sd_barrel = src_df["Barrel%"].std() if "Barrel%" in src_df else 0.04
+        if barrel is not None and "HR" in dist:
+            bz     = _zs(barrel, lg_barrel, sd_barrel)
+            factor = 1.0 + np.clip(bz * 0.17, -0.35, 0.40)
+            mu, sd = dist["HR"]
+            dist   = _blend(dist, "HR", mu * factor, clip_lo=0)
 
-        # ── R: wRC+ ──────────────────────────────────────────
-        wrcplus = _safe("wRC+"); lg_wrc = lg_h.get("wRC+", 100)
-        sd_wrc  = 20
-        if wrcplus is not None:
-            wz = _z(wrcplus, lg_wrc, sd_wrc)
-            factor = 1.0 + np.clip(wz * 0.05, -0.15, 0.15)
-            dist = _adjust(dist, "R", factor)
+        # ── R: wRC+ is the best run-scoring proxy ────────────
+        # A 2-sigma elite wRC+ (140 vs 100 avg, sd~20) gets +20% R
+        wrcplus  = _wavg("wRC+")
+        lg_wrc   = lg_h.get("wRC+", 100)
+        sd_wrc   = src_df["wRC+"].std() if "wRC+" in src_df else 20.0
+        if wrcplus is not None and "R" in dist:
+            wz     = _zs(wrcplus, lg_wrc, sd_wrc)
+            factor = 1.0 + np.clip(wz * 0.10, -0.25, 0.30)
+            mu, sd = dist["R"]
+            dist   = _blend(dist, "R", mu * factor, clip_lo=0)
 
-        # ── RBI: wOBA ────────────────────────────────────────
-        woba = _safe("wOBA"); lg_woba = lg_h.get("wOBA", 0.320)
-        sd_woba = 0.040
-        if woba is not None:
-            wobaz = _z(woba, lg_woba, sd_woba)
-            factor = 1.0 + np.clip(wobaz * 0.05, -0.15, 0.15)
-            dist = _adjust(dist, "RBI", factor)
+        # ── RBI: wOBA captures true run production ────────────
+        # Also use Hard% as secondary indicator
+        woba    = _wavg("wOBA")
+        hard    = _wavg("Hard%")
+        lg_woba = lg_h.get("wOBA", 0.320)
+        sd_woba = src_df["wOBA"].std() if "wOBA" in src_df else 0.040
+        if woba is not None and "RBI" in dist:
+            wobaz  = _zs(woba, lg_woba, sd_woba)
+            hard_z = _zs(hard, lg_h.get("Hard%", 0.37), 0.07) if hard is not None else 0.0
+            factor = 1.0 + np.clip(wobaz * 0.10 + hard_z * 0.04, -0.25, 0.30)
+            mu, sd = dist["RBI"]
+            dist   = _blend(dist, "RBI", mu * factor, clip_lo=0)
 
-        # ── SB: Spd score ────────────────────────────────────
-        spd = _safe("Spd"); lg_spd = lg_h.get("Spd", 4.5)
-        sd_spd = 1.8
-        if spd is not None:
-            sz = _z(spd, lg_spd, sd_spd)
-            factor = 1.0 + np.clip(sz * 0.08, -0.20, 0.20)
-            dist = _adjust(dist, "SB", factor)
+        # ── SB: Spd score is the best SB predictor ───────────
+        # A 2-sigma speed demon (Spd 8 vs 4.5 avg) gets +40% SB
+        spd    = _wavg("Spd")
+        lg_spd = lg_h.get("Spd", 4.5)
+        sd_spd = src_df["Spd"].std() if "Spd" in src_df else 1.8
+        if spd is not None and "SB" in dist:
+            sz     = _zs(spd, lg_spd, sd_spd)
+            factor = 1.0 + np.clip(sz * 0.18, -0.35, 0.45)
+            mu, sd = dist["SB"]
+            dist   = _blend(dist, "SB", mu * factor, clip_lo=0)
 
-        # ── AVG: xwOBA vs wOBA gap + xBA vs AVG gap ──────────
+        # ── AVG: xBA is the primary regressor, xwOBA as secondary
+        # If xBA is well below AVG, project regression; if above, upside
+        xba  = _wavg("xBA");   avg  = _wavg("AVG")
+        xwoba = _wavg("xwOBA"); woba2 = _wavg("wOBA")
         if "AVG" in dist:
             mu_avg, sd_avg = dist["AVG"]
-            adj = 0.0
-            xwoba = _safe("xwOBA"); woba2 = _safe("wOBA")
+            adj = mu_avg  # start from raw projection
+            if xba is not None and avg is not None:
+                # Strong regression signal: weight xBA heavily
+                xba_gap = xba - avg  # negative = avg is inflated by luck
+                adj += xba_gap * 0.55
             if xwoba is not None and woba2 is not None:
-                adj += (xwoba - woba2) * 0.30   # outperforming xwOBA → slight AVG drag
-            xba = _safe("xBA"); avg2 = _safe("AVG")
-            if xba is not None and avg2 is not None:
-                adj += (xba - avg2) * 0.40       # xBA below AVG → AVG should fall
-            blended_adj = mu_avg * (1 - saber_weight) + (mu_avg + adj) * saber_weight
-            dist["AVG"] = (float(np.clip(blended_adj, 0.150, 0.400)), sd_avg)
+                xwoba_gap = xwoba - woba2
+                adj += xwoba_gap * 0.20
+            dist = _blend(dist, "AVG", float(np.clip(adj, 0.150, 0.400)),
+                          clip_lo=0.150, clip_hi=0.400)
 
     else:  # pitcher
-        # ── ERA: blend toward xFIP / SIERA ───────────────────
-        era   = _safe("ERA");   xfip  = _safe("xFIP"); siera = _safe("SIERA")
-        if "ERA" in dist and (xfip is not None or siera is not None):
+        # ── ERA: blend toward xFIP/SIERA (luck correction) ───
+        # xFIP and SIERA strip out HR/BABIP luck — strongly predictive
+        # At saber_weight=1.0, ERA fully replaced by xFIP/SIERA blend
+        xfip  = _wavg("xFIP"); siera = _wavg("SIERA"); fip = _wavg("FIP")
+        if "ERA" in dist:
             mu_era, sd_era = dist["ERA"]
-            true_era = np.nanmean([v for v in [xfip, siera] if v is not None])
-            blended  = mu_era * (1 - saber_weight) + true_era * saber_weight
-            dist["ERA"] = (float(np.clip(blended, 1.5, 8.0)), sd_era)
+            # Weight: xFIP 40%, SIERA 40%, FIP 20% (if available)
+            true_vals = [(xfip, 0.40), (siera, 0.40), (fip, 0.20)]
+            avail     = [(v, w) for v, w in true_vals if v is not None]
+            if avail:
+                tot_w     = sum(w for _, w in avail)
+                true_era  = sum(v * w for v, w in avail) / tot_w
+                dist      = _blend(dist, "ERA", float(np.clip(true_era, 1.5, 8.0)),
+                                   clip_lo=1.5, clip_hi=8.0)
 
-        # ── WHIP: K-BB% z-score + GB% bonus ──────────────────
-        kbb = _safe("K-BB%"); gb = _safe("GB%")
-        lg_kbb = lg_p.get("K-BB%", 0.12); sd_kbb = 0.07
-        if "WHIP" in dist and kbb is not None:
-            kbbz = _z(kbb, lg_kbb, sd_kbb)
-            factor = 1.0 + np.clip(-kbbz * 0.04, -0.12, 0.12)  # high K-BB% → lower WHIP
-            dist = _adjust(dist, "WHIP", factor)
-        if "WHIP" in dist and gb is not None:
-            gb_bonus = np.clip((gb - 0.44) * 0.15, -0.06, 0.06)
-            mu_w, sd_w = dist["WHIP"]
-            blended = mu_w * (1 - saber_weight) + (mu_w - gb_bonus) * saber_weight
-            dist["WHIP"] = (float(np.clip(blended, 0.80, 2.20)), sd_w)
+        # ── WHIP: K-BB% and GB% are strong indicators ────────
+        kbb   = _wavg("K-BB%"); gb = _wavg("GB%"); bb_pct = _wavg("BB%")
+        lg_kbb = lg_p.get("K-BB%", 0.12)
+        sd_kbb = src_df["K-BB%"].std() if "K-BB%" in src_df else 0.07
+        if "WHIP" in dist:
+            mu_whip, sd_whip = dist["WHIP"]
+            adj_whip = mu_whip
+            if kbb is not None:
+                kbbz      = _zs(kbb, lg_kbb, sd_kbb)
+                adj_whip += np.clip(-kbbz * 0.07, -0.18, 0.18)  # high K-BB% → lower WHIP
+            if gb is not None:
+                # GB pitchers suppress hard contact → lower WHIP
+                adj_whip += np.clip(-(gb - 0.44) * 0.25, -0.08, 0.08)
+            if bb_pct is not None:
+                lg_bb = lg_p.get("BB%", 0.085)
+                sd_bb = src_df["BB%"].std() if "BB%" in src_df else 0.025
+                bbz   = _zs(bb_pct, lg_bb, sd_bb)
+                adj_whip += np.clip(bbz * 0.05, -0.10, 0.10)  # high BB% → higher WHIP
+            dist = _blend(dist, "WHIP", float(np.clip(adj_whip, 0.80, 2.20)),
+                          clip_lo=0.80, clip_hi=2.20)
 
-        # ── SO: SwStr% continuous scale ───────────────────────
-        swstr = _safe("SwStr%"); lg_sw = lg_p.get("SwStr%", 0.115); sd_sw = 0.025
-        if swstr is not None and "SO" in dist:
-            swz = _z(swstr, lg_sw, sd_sw)
-            factor = 1.0 + np.clip(swz * 0.05, -0.15, 0.15)
-            dist = _adjust(dist, "SO", factor)
+        # ── SO: SwStr% and K% are the best strikeout predictors
+        swstr = _wavg("SwStr%"); kpct = _wavg("K%")
+        lg_sw = lg_p.get("SwStr%", 0.115); sd_sw = src_df["SwStr%"].std() if "SwStr%" in src_df else 0.025
+        lg_k  = lg_p.get("K%",    0.220);  sd_k  = src_df["K%"].std()    if "K%"    in src_df else 0.050
+        if "SO" in dist:
+            mu_so, sd_so = dist["SO"]
+            factor = 1.0
+            if swstr is not None:
+                swz     = _zs(swstr, lg_sw, sd_sw)
+                factor += np.clip(swz * 0.12, -0.25, 0.30)   # SwStr% very predictive
+            if kpct is not None:
+                kz      = _zs(kpct, lg_k, sd_k)
+                factor += np.clip(kz * 0.08, -0.20, 0.25)    # K% also predictive
+            factor = np.clip(factor, 0.50, 1.80)
+            dist   = _blend(dist, "SO", mu_so * factor, clip_lo=0)
 
-        # ── W: slight boost for high K% + GB% (sustainable wins)
-        kpct = _safe("K%"); lg_k = lg_p.get("K%", 0.22); sd_k = 0.05
-        if kpct is not None and gb is not None and "W" in dist:
-            kz = _z(kpct, lg_k, sd_k)
-            gb_bonus = np.clip((gb - 0.44) * 0.10, -0.04, 0.04)
-            factor = 1.0 + np.clip(kz * 0.02 + gb_bonus, -0.08, 0.08)
-            dist = _adjust(dist, "W", factor)
+        # ── W: K/9, GB%, and ERA-xFIP gap all inform sustainability
+        k9  = _wavg("K/9"); csw = _wavg("CSW%")
+        lg_k9 = lg_p.get("K/9", 8.5); sd_k9 = src_df["K/9"].std() if "K/9" in src_df else 2.0
+        if "W" in dist:
+            mu_w, sd_w = dist["W"]
+            factor = 1.0
+            if k9 is not None:
+                k9z     = _zs(k9, lg_k9, sd_k9)
+                factor += np.clip(k9z * 0.06, -0.12, 0.15)
+            if gb is not None:
+                factor += np.clip((gb - 0.44) * 0.15, -0.06, 0.08)
+            if csw is not None:
+                csw_z   = _zs(csw, lg_p.get("CSW%", 0.30), 0.03)
+                factor += np.clip(csw_z * 0.04, -0.08, 0.10)
+            factor = np.clip(factor, 0.70, 1.40)
+            dist   = _blend(dist, "W", mu_w * factor, clip_lo=0)
+
+        # ── SV: CSW% and K% indicate closer dominance / leverage
+        # High CSW% / K% closers earn and keep save opportunities
+        if "SV" in dist:
+            mu_sv, sd_sv = dist["SV"]
+            if mu_sv > 3:   # only apply to actual closers
+                factor = 1.0
+                if csw is not None:
+                    csw_z   = _zs(csw, lg_p.get("CSW%", 0.30), 0.03)
+                    factor += np.clip(csw_z * 0.10, -0.18, 0.20)
+                if kpct is not None:
+                    kz      = _zs(kpct, lg_k, sd_k)
+                    factor += np.clip(kz * 0.06, -0.12, 0.15)
+                factor = np.clip(factor, 0.70, 1.40)
+                dist   = _blend(dist, "SV", mu_sv * factor, clip_lo=0)
 
     return dist
 
