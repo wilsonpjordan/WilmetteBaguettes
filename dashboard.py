@@ -2476,8 +2476,8 @@ elif page == "🎲 Monte Carlo Sim":
                 # (mimics a competitive 12-team draft, not random minor leaguers)
                 with st.spinner("Building calibrated opponent field..."):
                     # Use composite-ranked players as the talent pool
-                    top_h = bat_rec.nlargest(max(len(bat_rec)//2, 30), "composite")["Name"].tolist()
-                    top_p = pit_rec.nlargest(max(len(pit_rec)//2, 20), "composite")["Name"].tolist()
+                    top_h = bat_rec.nlargest(max(int(len(bat_rec)*0.35), 20), "composite")["Name"].tolist()
+                    top_p = pit_rec.nlargest(max(int(len(pit_rec)*0.35), 15), "composite")["Name"].tolist()
 
                     opp_pool_cal = {c: [] for c in cats_ss}
                     for oi in range(N_OPP):
@@ -2653,21 +2653,7 @@ elif page == "🎲 Monte Carlo Sim":
                     yaxis=dict(range=[0,105], title="Category Win %"), margin=dict(t=10,b=40))
                 st.plotly_chart(fig_catbar, use_container_width=True)
 
-                # Weekly avg
-                st.markdown("---")
-                st.markdown("#### 📆 Avg Category Wins per Week")
-                fig_wk = go.Figure(go.Bar(
-                    x=list(range(1, REG_WEEKS+1)), y=wk_avg_cats,
-                    marker_color=["#21C354" if v>=N_CATS*0.55 else "#FFA500" if v>=N_CATS*0.45 else "#FF4B4B"
-                                  for v in wk_avg_cats],
-                    text=[f"{v:.1f}" for v in wk_avg_cats], textposition="outside"))
-                fig_wk.add_hline(y=N_CATS/2, line_dash="dash", line_color="yellow", opacity=0.6,
-                    annotation_text=f"{N_CATS/2:.0f} (.500)")
-                fig_wk.update_layout(template="plotly_dark", height=270,
-                    xaxis=dict(title="Week", dtick=1),
-                    yaxis=dict(range=[0, N_CATS+0.5], title=f"Avg Cats Won (out of {N_CATS})"),
-                    margin=dict(l=40,r=20,t=10,b=40))
-                st.plotly_chart(fig_wk, use_container_width=True)
+
 
                 # ── Season performer breakdowns ─────────────────────────────
                 st.markdown("---")
@@ -2762,7 +2748,7 @@ elif page == "🎲 Monte Carlo Sim":
                 st.info("👆 Run your Monte Carlo sim first, then click **🏆 Run Season Simulation**.")
                 st.markdown(f"""
                 **How it works:**
-                - Opponents are built from the **top 50% of players** by composite score — representing a real competitive league, not random minor leaguers
+                - Opponents are built from the **top 35% of players** by composite score — representing a real competitive league, not random minor leaguers
                 - Per-category win probabilities are computed by comparing your MC distributions against {ss_league_sz-1 if 'ss_league_sz' in dir() else 11} simulated opponent rosters
                 - 20 weeks × {len(MC_ALL_CATS)} categories = 200 total matchup slots simulated per season
                 - Best/Median/Worst season breakdowns show week-by-week scores
