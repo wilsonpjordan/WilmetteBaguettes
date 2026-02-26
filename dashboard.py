@@ -2476,17 +2476,66 @@ elif page == "🎲 Monte Carlo Sim":
                 # (mimics a competitive 12-team draft, not random minor leaguers)
                 with st.spinner("Building calibrated opponent field..."):
                     # Use composite-ranked players as the talent pool
-                    top_h = bat_rec.nlargest(max(int(len(bat_rec)*0.35), 20), "composite")["Name"].tolist()
-                    top_p = pit_rec.nlargest(max(int(len(pit_rec)*0.35), 15), "composite")["Name"].tolist()
+                    top_h = bat_rec.nlargest(max(int(len(bat_rec)*0.44), 20), "composite")["Name"].tolist()
+                    top_p = pit_rec.nlargest(max(int(len(pit_rec)*0.44), 15), "composite")["Name"].tolist()
+
+                    # Build full player talent pool including some mid-tier players
+                    # to create natural quality spread across opponents
+                    all_h_sorted = bat_rec.sort_values("composite", ascending=False)["Name"].tolist()
+                    all_p_sorted = pit_rec.sort_values("composite", ascending=False)["Name"].tolist()
 
                     opp_pool_cal = {c: [] for c in cats_ss}
                     for oi in range(N_OPP):
-                        # Each opponent drafts from top players — with some variance
-                        # to represent different draft strategies
-                        n_h = min(9, len(top_h))
-                        n_p = min(7, len(top_p))
-                        hs = tuple(np.random.choice(top_h, size=n_h, replace=False))
-                        ps = tuple(np.random.choice(top_p, size=n_p, replace=False))
+                        # Each opponent gets a random quality tier:
+                        # ~25% elite (top 25%), ~50% good (top 44%), ~25% mid (top 60%)
+                        # This creates realistic league spread — some great teams, some middling
+                        # Real drafts: every team has a mix of good and bad players.
+                        # Tier controls how many "stud" slots each team gets —
+                        # the rest are filled from progressively deeper in the pool.
+                        # This mirrors how actual Yahoo drafts play out.
+                        tier_roll = np.random.random()
+                        if tier_roll < 0.08:
+                            tier_label = "Contender"
+                            stud_frac_h, stud_frac_p = 0.55, 0.55   # 55% studs, 45% depth
+                        elif tier_roll < 0.20:
+                            tier_label = "Strong"
+                            stud_frac_h, stud_frac_p = 0.44, 0.44
+                        elif tier_roll < 0.38:
+                            tier_label = "Solid"
+                            stud_frac_h, stud_frac_p = 0.33, 0.33
+                        elif tier_roll < 0.58:
+                            tier_label = "Average"
+                            stud_frac_h, stud_frac_p = 0.22, 0.22
+                        elif tier_roll < 0.75:
+                            tier_label = "Below avg"
+                            stud_frac_h, stud_frac_p = 0.15, 0.15
+                        elif tier_roll < 0.88:
+                            tier_label = "Weak"
+                            stud_frac_h, stud_frac_p = 0.10, 0.10
+                        else:
+                            tier_label = "Rebuilding"
+                            stud_frac_h, stud_frac_p = 0.05, 0.05
+
+                        # Split roster: stud_frac from top of pool, rest from mid/deep
+                        n_h, n_p = min(9, len(all_h_sorted)), min(7, len(all_p_sorted))
+                        n_studs_h = max(1, round(n_h * stud_frac_h))
+                        n_studs_p = max(1, round(n_p * stud_frac_p))
+                        n_depth_h = n_h - n_studs_h
+                        n_depth_p = n_p - n_studs_p
+
+                        # Stud pool = top 30%, depth pool = remaining 70%
+                        stud_pool_h  = all_h_sorted[:max(int(len(all_h_sorted)*0.30), 10)]
+                        stud_pool_p  = all_p_sorted[:max(int(len(all_p_sorted)*0.30), 8)]
+                        depth_pool_h = all_h_sorted[len(stud_pool_h):]
+                        depth_pool_p = all_p_sorted[len(stud_pool_p):]
+
+                        studs_h  = list(np.random.choice(stud_pool_h,  min(n_studs_h, len(stud_pool_h)),  replace=False))
+                        depth_h  = list(np.random.choice(depth_pool_h, min(n_depth_h, len(depth_pool_h)), replace=False))
+                        studs_p  = list(np.random.choice(stud_pool_p,  min(n_studs_p, len(stud_pool_p)),  replace=False))
+                        depth_p  = list(np.random.choice(depth_pool_p, min(n_depth_p, len(depth_pool_p)), replace=False))
+
+                        hs = tuple(studs_h + depth_h)
+                        ps = tuple(studs_p + depth_p)
                         odf, _ = mc_run_simulation(
                             hs, ps, min(N_SIM, 1000),
                             mc_p["injury_pct"], mc_p["regression_pull"],
@@ -2585,7 +2634,7 @@ elif page == "🎲 Monte Carlo Sim":
                                   "Loss %": f"{cat_probs[cat]['loss']*100:.1f}%"}
                                  for cat in cats_ss]
                     st.dataframe(pd.DataFrame(prob_rows), hide_index=True, use_container_width=True)
-                    st.caption(f"Opponents drawn from top-50% of players by composite score ({len(top_h)} hitters, {len(top_p)} pitchers).")
+                    st.caption(f"Opponents drawn from tiered quality pool of players by composite score ({len(top_h)} hitters, {len(top_p)} pitchers).")
 
                 sm1, sm2, sm3, sm4, sm5 = st.columns(5)
                 sm1.metric("Median Season Record",  f"{int(med_W)}-{int(med_L)}-{int(med_T)}")
@@ -2748,7 +2797,7 @@ elif page == "🎲 Monte Carlo Sim":
                 st.info("👆 Run your Monte Carlo sim first, then click **🏆 Run Season Simulation**.")
                 st.markdown(f"""
                 **How it works:**
-                - Opponents are built from the **top 35% of players** by composite score — representing a real competitive league, not random minor leaguers
+                - Opponents are built from the **top 44% of players** by composite score — representing a real competitive league, not random minor leaguers
                 - Per-category win probabilities are computed by comparing your MC distributions against {ss_league_sz-1 if 'ss_league_sz' in dir() else 11} simulated opponent rosters
                 - 20 weeks × {len(MC_ALL_CATS)} categories = 200 total matchup slots simulated per season
                 - Best/Median/Worst season breakdowns show week-by-week scores
