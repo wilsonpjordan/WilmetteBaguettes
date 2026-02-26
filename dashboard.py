@@ -1062,11 +1062,22 @@ elif page == "🔍 Player Deep Dive":
                     if v > 25: return "color:#FFA500"
                     return "color:#21C354"
                 except: return ""
+            def _clean_num(val):
+                try:
+                    v = float(val)
+                    if v != v: return val  # NaN
+                    if v == int(v): return str(int(v))
+                    s = f"{v:.3f}".rstrip("0").rstrip(".")
+                    return s
+                except: return val
+            num_cols = [c for c in ["Floor (P10)","P25","Median","P75","Ceiling (P90)"] if c in proj_df.columns]
+            fmt_map = {c: _clean_num for c in num_cols}
+            fmt_map["Volatility (CV%)"] = "{:.1f}%"
             st.dataframe(
                 proj_df.style
                     .map(_dir_color, subset=["Direction"])
                     .map(_cv_color,  subset=["Volatility (CV%)"])
-                    .format({"Volatility (CV%)": "{:.1f}%"}),
+                    .format(fmt_map),
                 use_container_width=True, hide_index=True)
             st.caption("**CV%** = volatility. Green < 25% = consistent. Orange 25–40% = variable. Red > 40% = highly unpredictable.")
 
@@ -2436,23 +2447,13 @@ elif page == "🎲 Monte Carlo Sim":
                     st.markdown(f"<h2 style='color:{result_color};text-align:center'>{result_label}</h2>",
                         unsafe_allow_html=True)
                     fig_h2h = go.Figure()
-                    fig_h2h.add_trace(go.Bar(
-                        x=h2h_df["Category"], y=h2h_df["Win Prob"],
-                        marker_color=["#21C354" if v >= 55 else "#FF4B4B" if v <= 45 else "#FFA500"
-                                      for v in h2h_df["Win Prob"]],
-                        text=[f"{v:.0f}%" for v in h2h_df["Win Prob"]], textposition="outside"))
-                    fig_h2h.add_hline(y=50, line_dash="dash", line_color="white", opacity=0.5)
-                    fig_h2h.update_layout(template="plotly_dark", height=380,
-                        yaxis=dict(range=[0,110], title="Win Probability (%)"),
-                        xaxis_title="Category", showlegend=False, margin=dict(t=20))
-                    st.plotly_chart(fig_h2h, use_container_width=True)
-
         # ── Tab 5: Season Sim ──────────────────────────────────
         with tab_season:
             st.markdown("### 📅 Yahoo Fantasy Season Simulator")
             st.caption(
-                "Uses your actual MC category win probabilities to simulate 20 weeks of H2H matchups. "
-                "Each week: all 9 categories scored W/L/T. Season record = cumulative W-L-T (out of 180)."
+                "Simulates a 20-week Yahoo H2H 10-cat season. "
+                "Each week all 10 categories are scored W/L/T vs one opponent. "
+                "Season record = cumulative W-L-T (out of 200 total category slots)."
             )
 
             ss_col1, ss_col2, ss_col3 = st.columns(3)
@@ -2466,74 +2467,80 @@ elif page == "🎲 Monte Carlo Sim":
                 REG_WEEKS   = 20
                 N_SIM       = ss_n_seasons
                 N_OPP       = ss_league_sz - 1
-                TOTAL_SLOTS = REG_WEEKS * 9   # 180
                 cats_ss     = [c for c in MC_ALL_CATS if c in team_sims.columns]
-                N_CATS      = len(cats_ss)
+                N_CATS      = len(cats_ss)          # should be 10
+                TOTAL_SLOTS = REG_WEEKS * N_CATS    # 200
 
-                # ── Step 1: Compute per-category win probability ────────
-                # This reuses the EXACT same logic as the Category Win Odds tab —
-                # compare your MC season draws directly against opponent season draws.
-                # The result is one win probability per category (0.0–1.0) and
-                # one tie probability (when values are equal).
-                with st.spinner("Computing category win probabilities from MC distributions..."):
-                    opp_pool = mc_opponent_pool(
-                        N_OPP,
-                        min(mc_p["n_sim"], 2000),
-                        mc_p.get("run_count", 0)
-                    )
+                # ── Step 1: Build a CALIBRATED opponent pool ───────────────
+                # Key: sample from top-50% of players by composite score
+                # (mimics a competitive 12-team draft, not random minor leaguers)
+                with st.spinner("Building calibrated opponent field..."):
+                    # Use composite-ranked players as the talent pool
+                    top_h = bat_rec.nlargest(max(len(bat_rec)//2, 30), "composite")["Name"].tolist()
+                    top_p = pit_rec.nlargest(max(len(pit_rec)//2, 20), "composite")["Name"].tolist()
 
-                    cat_probs = {}   # {cat: {"win": float, "loss": float, "tie": float}}
+                    opp_pool_cal = {c: [] for c in cats_ss}
+                    for oi in range(N_OPP):
+                        # Each opponent drafts from top players — with some variance
+                        # to represent different draft strategies
+                        n_h = min(9, len(top_h))
+                        n_p = min(7, len(top_p))
+                        hs = tuple(np.random.choice(top_h, size=n_h, replace=False))
+                        ps = tuple(np.random.choice(top_p, size=n_p, replace=False))
+                        odf, _ = mc_run_simulation(
+                            hs, ps, min(N_SIM, 1000),
+                            mc_p["injury_pct"], mc_p["regression_pull"],
+                            mc_p["platoon_boost"], mc_p.get("saber_weight", 0.5),
+                            run_count=mc_p.get("run_count", 0) + 800 + oi)
+                        for c in cats_ss:
+                            if c in odf.columns:
+                                opp_pool_cal[c].append(odf[c].values)
+
+                # ── Step 2: Compute per-category win probability ────────────
+                with st.spinner("Computing category win probabilities..."):
+                    # Re-run my team at same N_SIM to ensure fresh distributions
+                    my_sims, _ = mc_run_simulation(
+                        mc_p["hitters"], mc_p["pitchers"],
+                        min(N_SIM, 1000),
+                        mc_p["injury_pct"], mc_p["regression_pull"],
+                        mc_p["platoon_boost"], mc_p.get("saber_weight", 0.5),
+                        run_count=mc_p.get("run_count", 0))
+
+                    cat_probs = {}
                     for cat in cats_ss:
-                        if cat not in opp_pool:
-                            cat_probs[cat] = {"win": 0.5, "loss": 0.5, "tie": 0.0}
+                        if cat not in opp_pool_cal or not opp_pool_cal[cat]:
+                            cat_probs[cat] = {"win": 0.5, "tie": 0.02, "loss": 0.48}
                             continue
-
-                        my_v   = team_sims[cat].values
-                        # Compare against every opponent — each opponent has N_SIM draws
+                        my_v = my_sims[cat].values if cat in my_sims.columns else team_sims[cat].values
                         win_rates, tie_rates = [], []
-                        for opp_draws in opp_pool[cat]:
+                        for opp_draws in opp_pool_cal[cat]:
                             n = min(len(my_v), len(opp_draws))
-                            mv = my_v[:n]
-                            ov = opp_draws[:n]
+                            mv, ov = my_v[:n], opp_draws[:n]
                             if cat in MC_LOWER_BETTER:
                                 w = float(np.mean(mv < ov))
-                                t = float(np.mean(mv == ov))
+                                t = float(np.mean(np.abs(mv - ov) < 0.01))
                             else:
                                 w = float(np.mean(mv > ov))
                                 t = float(np.mean(mv == ov))
                             win_rates.append(w)
                             tie_rates.append(t)
-
-                        p_win  = float(np.mean(win_rates))
-                        p_tie  = max(float(np.mean(tie_rates)), 0.02)   # at least 2% tie rate
+                        p_win = float(np.mean(win_rates))
+                        p_tie = max(float(np.mean(tie_rates)), 0.01)
                         p_loss = max(1.0 - p_win - p_tie, 0.0)
-                        # Normalise to sum to 1
-                        total  = p_win + p_tie + p_loss
+                        total = p_win + p_tie + p_loss
                         cat_probs[cat] = {
                             "win":  p_win  / total,
                             "tie":  p_tie  / total,
                             "loss": p_loss / total,
                         }
 
-                # ── Step 2: Simulate N_SIM seasons × 20 weeks ──────────
-                # Each week: for each of 9 categories, draw W/T/L from the
-                # multinomial distribution defined by that category's probabilities.
-                # This correctly reflects:
-                #   - Roster quality (win probs come from real MC distributions)
-                #   - Week-to-week variance (each week is an independent draw)
-                #   - Ties (explicitly modelled)
-                #   - Category independence (each cat drawn separately)
-                with st.spinner(f"Simulating {N_SIM:,} seasons × {REG_WEEKS} weeks..."):
-                    # cat_wlt[sim, week, cat_idx] = +1 W / 0 T / -1 L
+                # ── Step 3: Simulate N_SIM full seasons ────────────────────
+                with st.spinner(f"Simulating {N_SIM:,} seasons × {REG_WEEKS} weeks × {N_CATS} cats..."):
                     cat_wlt = np.zeros((N_SIM, REG_WEEKS, N_CATS), dtype=np.int8)
-
                     for ci, cat in enumerate(cats_ss):
                         p_w = cat_probs[cat]["win"]
                         p_t = cat_probs[cat]["tie"]
                         p_l = cat_probs[cat]["loss"]
-
-                        # Draw N_SIM × REG_WEEKS outcomes at once from multinomial
-                        # multinomial returns counts per outcome — flatten to per-slot
                         outcomes = np.random.choice(
                             [1, 0, -1],
                             size=(N_SIM, REG_WEEKS),
@@ -2541,7 +2548,7 @@ elif page == "🎲 Monte Carlo Sim":
                         )
                         cat_wlt[:, :, ci] = outcomes.astype(np.int8)
 
-                # ── Step 3: Aggregate ───────────────────────────────────
+                # ── Step 4: Aggregate ───────────────────────────────────────
                 season_W = (cat_wlt ==  1).sum(axis=(1,2)).astype(int)
                 season_L = (cat_wlt == -1).sum(axis=(1,2)).astype(int)
                 season_T = (cat_wlt ==  0).sum(axis=(1,2)).astype(int)
@@ -2550,13 +2557,18 @@ elif page == "🎲 Monte Carlo Sim":
                 cat_loss_rates = (cat_wlt == -1).mean(axis=(0,1))
                 cat_tie_rates  = (cat_wlt ==  0).mean(axis=(0,1))
 
-                wk_cat_wins = (cat_wlt == 1).sum(axis=2)    # (N_SIM, REG_WEEKS)
-                wk_avg_cats = wk_cat_wins.mean(axis=0)       # (REG_WEEKS,) avg cats won per week
+                wk_cat_wins = (cat_wlt ==  1).sum(axis=2)   # (N_SIM, REG_WEEKS)
+                wk_avg_cats = wk_cat_wins.mean(axis=0)       # (REG_WEEKS,)
 
-                playoff_cutoff = np.percentile(season_W, (1 - ss_playoff_spots/ss_league_sz)*100)
+                # Best/worst performer seasons
+                best_szn_idx  = int(np.argmax(season_W))
+                worst_szn_idx = int(np.argmin(season_W))
+                med_szn_idx   = int(np.argmin(np.abs(season_W - np.median(season_W))))
+
+                playoff_cutoff = float(np.percentile(season_W, (1 - ss_playoff_spots/ss_league_sz)*100))
                 playoff_rate   = float((season_W >= playoff_cutoff).mean())
 
-                # ── Display ─────────────────────────────────────────────
+                # ── Display ─────────────────────────────────────────────────
                 st.markdown("---")
                 med_W  = float(np.median(season_W))
                 med_L  = float(np.median(season_L))
@@ -2565,49 +2577,46 @@ elif page == "🎲 Monte Carlo Sim":
                 p90_W  = float(np.percentile(season_W, 90))
                 win_pct = med_W / TOTAL_SLOTS * 100
 
-                # Show the per-cat win probs used — key sanity check
-                with st.expander("📊 Category win probabilities used in simulation"):
+                # Sanity check expander
+                with st.expander("📊 Category win probabilities used (vs competitive field)"):
                     prob_rows = [{"Category": cat,
                                   "Win %": f"{cat_probs[cat]['win']*100:.1f}%",
                                   "Tie %": f"{cat_probs[cat]['tie']*100:.1f}%",
                                   "Loss %": f"{cat_probs[cat]['loss']*100:.1f}%"}
                                  for cat in cats_ss]
                     st.dataframe(pd.DataFrame(prob_rows), hide_index=True, use_container_width=True)
+                    st.caption(f"Opponents drawn from top-50% of players by composite score ({len(top_h)} hitters, {len(top_p)} pitchers).")
 
                 sm1, sm2, sm3, sm4, sm5 = st.columns(5)
                 sm1.metric("Median Season Record",  f"{int(med_W)}-{int(med_L)}-{int(med_T)}")
                 sm2.metric("Win Range (P10–P90)",   f"{int(p10_W)}–{int(p90_W)} W")
                 sm3.metric("Win % (cat basis)",     f"{win_pct:.1f}%")
-                sm4.metric("Avg Cat Wins / Week",   f"{wk_avg_cats.mean():.1f} / 9")
-                sm5.metric("Est. Playoff %",        f"{playoff_rate*100:.1f}%",
-                    help=f"Top {ss_playoff_spots} of {ss_league_sz} by total cat wins")
+                sm4.metric("Avg Cat Wins / Week",   f"{wk_avg_cats.mean():.1f} / {N_CATS}")
+                sm5.metric("Est. Playoff %",        f"{playoff_rate*100:.1f}%")
 
-                # Distribution histogram
+                # Distribution
                 st.markdown("#### 📊 Season Category-Win Distribution")
                 fig_wins = go.Figure()
                 fig_wins.add_trace(go.Histogram(
-                    x=season_W, nbinsx=50,
-                    marker_color="#4fc3f7", showlegend=False,
+                    x=season_W, nbinsx=50, marker_color="#4fc3f7", showlegend=False,
                     hovertemplate="Cat Wins: %{x}<br>Seasons: %{y}<extra></extra>"))
                 fig_wins.add_vline(x=med_W, line_dash="dash", line_color="yellow",
                     annotation_text=f"Median {int(med_W)}W", annotation_position="top right")
                 fig_wins.add_vrect(x0=p10_W, x1=p90_W,
-                    fillcolor="rgba(79,195,247,0.07)", line_width=0,
-                    annotation_text="P10–P90", annotation_position="top left")
+                    fillcolor="rgba(79,195,247,0.07)", line_width=0)
                 fig_wins.add_vline(x=playoff_cutoff, line_dash="dot", line_color="#21C354",
                     annotation_text=f"~Playoff ({int(playoff_cutoff)}W)",
                     annotation_font_color="#21C354")
-                fig_wins.add_vline(x=TOTAL_SLOTS/2, line_dash="dash",
+                fig_wins.add_vline(x=TOTAL_SLOTS*0.5, line_dash="dash",
                     line_color="gray", opacity=0.4, annotation_text=".500")
                 fig_wins.update_layout(template="plotly_dark", height=270,
                     xaxis_title=f"Total Category Wins (out of {TOTAL_SLOTS})",
                     yaxis_title="Simulated Seasons", margin=dict(l=40,r=20,t=20,b=40))
                 st.plotly_chart(fig_wins, use_container_width=True)
 
-                # Per-category record table
+                # Per-cat record
                 st.markdown("---")
                 st.markdown("#### 🏅 Per-Category Season Record")
-                st.caption(f"Expected W-L-T per category across all {REG_WEEKS} weeks.")
                 cat_rec_df = pd.DataFrame({
                     "Category":  cats_ss,
                     "Avg W":     [round(r * REG_WEEKS, 1) for r in cat_win_rates],
@@ -2639,63 +2648,123 @@ elif page == "🎲 Monte Carlo Sim":
                     marker_color=["#21C354" if v>=52 else "#FFA500" if v>=46 else "#FF4B4B"
                                   for v in cat_rec_df["Win %"]],
                     text=[f"{v:.1f}%" for v in cat_rec_df["Win %"]], textposition="outside"))
-                fig_catbar.add_hline(y=50, line_dash="dash", line_color="gray", opacity=0.5,
-                    annotation_text="50%")
+                fig_catbar.add_hline(y=50, line_dash="dash", line_color="gray", opacity=0.5)
                 fig_catbar.update_layout(template="plotly_dark", height=280,
-                    yaxis=dict(range=[0,105], title="Category Win %"),
-                    margin=dict(t=10, b=40))
+                    yaxis=dict(range=[0,105], title="Category Win %"), margin=dict(t=10,b=40))
                 st.plotly_chart(fig_catbar, use_container_width=True)
 
-                # Week-by-week avg cats won
+                # Weekly avg
                 st.markdown("---")
                 st.markdown("#### 📆 Avg Category Wins per Week")
-                st.caption("Should hover around your overall win rate. Week-to-week variance comes from the random draw.")
                 fig_wk = go.Figure(go.Bar(
                     x=list(range(1, REG_WEEKS+1)), y=wk_avg_cats,
-                    marker_color=["#21C354" if v>=5.0 else "#FFA500" if v>=4.0 else "#FF4B4B"
+                    marker_color=["#21C354" if v>=N_CATS*0.55 else "#FFA500" if v>=N_CATS*0.45 else "#FF4B4B"
                                   for v in wk_avg_cats],
                     text=[f"{v:.1f}" for v in wk_avg_cats], textposition="outside"))
-                fig_wk.add_hline(y=4.5, line_dash="dash", line_color="yellow", opacity=0.6,
-                    annotation_text="4.5")
+                fig_wk.add_hline(y=N_CATS/2, line_dash="dash", line_color="yellow", opacity=0.6,
+                    annotation_text=f"{N_CATS/2:.0f} (.500)")
                 fig_wk.update_layout(template="plotly_dark", height=270,
                     xaxis=dict(title="Week", dtick=1),
-                    yaxis=dict(range=[0,9.5], title="Avg Cats Won (out of 9)"),
-                    margin=dict(l=40, r=20, t=10, b=40))
+                    yaxis=dict(range=[0, N_CATS+0.5], title=f"Avg Cats Won (out of {N_CATS})"),
+                    margin=dict(l=40,r=20,t=10,b=40))
                 st.plotly_chart(fig_wk, use_container_width=True)
 
-                # Sample scoreboard
+                # ── Season performer breakdowns ─────────────────────────────
                 st.markdown("---")
-                st.markdown("#### 📋 Sample Season Scoreboard")
-                st.caption("One randomly selected simulated season showing weekly W-L-T scores.")
-                cum_W = cum_L = cum_T = 0
-                sb_rows = []
-                for wi in range(REG_WEEKS):
-                    wW = int((cat_wlt[0, wi, :] ==  1).sum())
-                    wL = int((cat_wlt[0, wi, :] == -1).sum())
-                    wT = int((cat_wlt[0, wi, :] ==  0).sum())
-                    cum_W += wW; cum_L += wL; cum_T += wT
-                    sb_rows.append({"Week": f"Wk {wi+1}",
-                                    "Score": f"{wW}-{wL}-{wT}",
-                                    "Cumulative": f"{cum_W}-{cum_L}-{cum_T}"})
-                sb_df = pd.DataFrame(sb_rows)
-                def _sw(val):
-                    try:
-                        w = int(str(val).split("-")[0])
-                        if w >= 6: return "color:#21C354; font-weight:bold"
-                        if w >= 5: return "color:#21C354"
-                        if w == 4: return "color:#FFA500"
-                        return "color:#FF4B4B"
-                    except: return ""
-                st.dataframe(sb_df.style.map(_sw, subset=["Score"]),
-                    use_container_width=True, hide_index=True, height=580)
-                st.caption(f"Sample final: **{cum_W}-{cum_L}-{cum_T}** out of {TOTAL_SLOTS}")
+                st.markdown("#### 🎭 Season Outcome Breakdowns")
+                st.caption("Best, median, and worst simulated seasons — showing week-by-week scores.")
+
+                def _build_scoreboard(sim_idx, label, color):
+                    cum_W = cum_L = cum_T = 0
+                    rows = []
+                    for wi in range(REG_WEEKS):
+                        wW = int((cat_wlt[sim_idx, wi, :] ==  1).sum())
+                        wL = int((cat_wlt[sim_idx, wi, :] == -1).sum())
+                        wT = int((cat_wlt[sim_idx, wi, :] ==  0).sum())
+                        cum_W += wW; cum_L += wL; cum_T += wT
+                        rows.append({"Week": f"Wk {wi+1}",
+                                     "Score": f"{wW}-{wL}-{wT}",
+                                     "Cumulative": f"{cum_W}-{cum_L}-{cum_T}"})
+                    final = f"{season_W[sim_idx]}-{season_L[sim_idx]}-{season_T[sim_idx]}"
+                    st.markdown(f"<span style='color:{color};font-weight:bold'>{label}: {final}</span>",
+                        unsafe_allow_html=True)
+                    def _sw(val):
+                        try:
+                            w = int(str(val).split("-")[0])
+                            if w >= N_CATS*0.65: return "color:#21C354; font-weight:bold"
+                            if w >= N_CATS*0.55: return "color:#21C354"
+                            if w == round(N_CATS/2): return "color:#FFA500"
+                            return "color:#FF4B4B"
+                        except: return ""
+                    df = pd.DataFrame(rows)
+                    st.dataframe(df.style.map(_sw, subset=["Score"]),
+                        use_container_width=True, hide_index=True, height=400)
+
+                tab_best, tab_med, tab_worst = st.tabs(["🏆 Best Season", "📊 Median Season", "💀 Worst Season"])
+                with tab_best:
+                    _build_scoreboard(best_szn_idx, "Best simulated season", "#21C354")
+                with tab_med:
+                    _build_scoreboard(med_szn_idx, "Median simulated season", "#FFA500")
+                with tab_worst:
+                    _build_scoreboard(worst_szn_idx, "Worst simulated season", "#FF4B4B")
+
+                # ── Top performers across all simulated seasons ─────────────
+                st.markdown("---")
+                st.markdown("#### 🌟 Top Performers Across All Simulated Seasons")
+                st.caption(f"Distribution of final records across all {N_SIM:,} simulated seasons.")
+
+                perf_cols = st.columns(3)
+                # Top 10% seasons
+                p90_thresh = int(np.percentile(season_W, 90))
+                p10_thresh = int(np.percentile(season_W, 10))
+                great_pct  = float(np.mean(season_W >= p90_thresh)) * 100
+                bad_pct    = float(np.mean(season_W <= p10_thresh)) * 100
+                avg_cats_wk = float(wk_avg_cats.mean())
+
+                perf_cols[0].metric("🏆 Great Season (P90+)", f"{p90_thresh}+ W",
+                    f"Happens {great_pct:.0f}% of simulations")
+                perf_cols[1].metric("📊 Avg Cats Won / Wk",  f"{avg_cats_wk:.1f} / {N_CATS}",
+                    f"{'Above' if avg_cats_wk > N_CATS/2 else 'Below'} .500")
+                perf_cols[2].metric("💀 Rough Season (P10-)", f"{p10_thresh}- W",
+                    f"Happens {bad_pct:.0f}% of simulations")
+
+                # Percentile table
+                pcts = [10, 25, 50, 75, 90, 95]
+                pct_df = pd.DataFrame({
+                    "Percentile": [f"P{p}" for p in pcts],
+                    "Season W":   [int(np.percentile(season_W, p)) for p in pcts],
+                    "Season L":   [int(np.percentile(season_L, 100-p)) for p in pcts],
+                    "Context":    ["Rough season", "Below avg", "Median", "Above avg", "Great season", "Elite season"]
+                })
+                def _pct_color(val):
+                    ctx = str(val)
+                    if "Elite" in ctx or "Great" in ctx: return "color:#21C354; font-weight:bold"
+                    if "Above" in ctx: return "color:#21C354"
+                    if "Median" in ctx: return "color:#FFA500"
+                    return "color:#FF4B4B"
+                st.dataframe(pct_df.style.map(_pct_color, subset=["Context"]),
+                    use_container_width=True, hide_index=True)
+
+                # Best category weeks
+                st.markdown("**📅 Your best category weeks** — weeks where you dominated (won most cats)")
+                wk_wins_per_sim = (cat_wlt == 1).sum(axis=2)   # (N_SIM, REG_WEEKS)
+                avg_per_week    = wk_wins_per_sim.mean(axis=0)  # (REG_WEEKS,)
+                best_wk_idx     = int(np.argmax(avg_per_week))
+                worst_wk_idx    = int(np.argmin(avg_per_week))
+                st.markdown(
+                    f"📈 Strongest week on average: **Week {best_wk_idx+1}** "
+                    f"({avg_per_week[best_wk_idx]:.1f} cats won avg)  "
+                    f"  📉 Weakest: **Week {worst_wk_idx+1}** "
+                    f"({avg_per_week[worst_wk_idx]:.1f} cats won avg)"
+                )
 
             else:
                 st.info("👆 Run your Monte Carlo sim first, then click **🏆 Run Season Simulation**.")
-                st.markdown("""
+                st.markdown(f"""
                 **How it works:**
-                - Computes per-category win/tie/loss probabilities from your actual MC distributions vs real simulated opponents (same as the Category Win Odds tab)
-                - Simulates 20 independent weekly matchups using those probabilities — each week each of 9 categories draws W, T, or L
-                - Swapping a player changes your MC distributions → changes the win probabilities → changes the season record
-                - Season record = cumulative W-L-T across all 180 category slots (20 weeks × 9 cats)
+                - Opponents are built from the **top 50% of players** by composite score — representing a real competitive league, not random minor leaguers
+                - Per-category win probabilities are computed by comparing your MC distributions against {ss_league_sz-1 if 'ss_league_sz' in dir() else 11} simulated opponent rosters
+                - 20 weeks × {len(MC_ALL_CATS)} categories = 200 total matchup slots simulated per season
+                - Best/Median/Worst season breakdowns show week-by-week scores
+                - A great season is roughly 120+ W (60%+ win rate); a rough season is under 85W
                 """)
