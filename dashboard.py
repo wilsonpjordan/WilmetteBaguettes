@@ -3118,6 +3118,8 @@ if page == "🏆 My Yahoo League":
         st.session_state["yahoo_oauth_state"]    = None
     if "yahoo_pkce_verifier"  not in st.session_state:
         st.session_state["yahoo_pkce_verifier"]  = None
+    if "yahoo_auth_url"       not in st.session_state:
+        st.session_state["yahoo_auth_url"]       = None
     if "yahoo_token"          not in st.session_state:
         st.session_state["yahoo_token"]          = None
     if "yahoo_league_key"     not in st.session_state:
@@ -3158,20 +3160,31 @@ if page == "🏆 My Yahoo League":
             "Click below to securely authorize this app with Yahoo. "
             "You'll be redirected to Yahoo's login page, then brought back here automatically."
         )
-        if st.button("🔗 Connect Yahoo Fantasy", type="primary", key="btn_yahoo_connect"):
+        # Generate auth URL and store PKCE state
+        if "yahoo_auth_url" not in st.session_state or st.session_state.get("yahoo_auth_url") is None:
             verifier, challenge = _pkce_pair()
             state = _sec.token_hex(16)
             st.session_state["yahoo_pkce_verifier"] = verifier
             st.session_state["yahoo_oauth_state"]   = state
-            auth_url = _auth_url(state, challenge)
-            # Redirect user to Yahoo
-            st.markdown(
-                f'<meta http-equiv="refresh" content="0; url={auth_url}">',
-                unsafe_allow_html=True
-            )
-            st.markdown(
-                f"[Click here if not redirected automatically]({auth_url})"
-            )
+            st.session_state["yahoo_auth_url"]      = _auth_url(state, challenge)
+
+        auth_url = st.session_state["yahoo_auth_url"]
+
+        # Use a big styled link — must be a real <a> tag so the browser
+        # navigates directly (meta-refresh is blocked by Streamlit's CSP)
+        st.markdown(
+            f"""
+            <a href="{auth_url}" target="_self"
+               style="display:inline-block;padding:12px 28px;background:#6001D2;
+                      color:white;border-radius:8px;font-size:16px;font-weight:bold;
+                      text-decoration:none;">
+               🔗 Connect Yahoo Fantasy
+            </a>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.caption("Clicking the button above takes you to Yahoo's login page. "
+                   "After authorizing, you'll be redirected back here automatically.")
     else:
         # ── Authenticated ─────────────────────────────────────
         tok     = st.session_state["yahoo_token"]
@@ -3183,7 +3196,7 @@ if page == "🏆 My Yahoo League":
         col_title.caption(f"Token age: {age_min:.0f} min / {exp_min:.0f} min — "
                           f"{'🟢 valid' if age_min < exp_min - 5 else '🟡 refreshing soon'}")
         if col_disc.button("Disconnect", key="btn_yahoo_disc"):
-            for k in ["yahoo_token","yahoo_league_key","yahoo_my_team_key","yahoo_my_team_name"]:
+            for k in ["yahoo_token","yahoo_league_key","yahoo_my_team_key","yahoo_my_team_name","yahoo_auth_url"]:
                 st.session_state[k] = None
             st.rerun()
 
