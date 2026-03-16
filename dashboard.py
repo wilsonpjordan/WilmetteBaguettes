@@ -3027,6 +3027,43 @@ if page == "🏆 My Yahoo League":
         ).rstrip(b"=").decode()
         return verifier, challenge
 
+    def _make_state(verifier: str) -> str:
+        """
+        Encode the PKCE verifier INTO the OAuth state parameter.
+        This survives the full page reload that happens after Yahoo redirects back,
+        since Streamlit Cloud resets session_state on every fresh page load.
+
+        Format: base64url(verifier + "||" + hmac)
+        HMAC prevents a malicious state parameter from injecting an arbitrary verifier.
+        """
+        import hmac as _hmac
+        sig = _hmac.new(
+            CONSUMER_SECRET.encode(),
+            verifier.encode(),
+            _hs.sha256
+        ).hexdigest()[:16]
+        raw = f"{verifier}||{sig}"
+        return _b64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+
+    def _decode_state(state: str) -> str | None:
+        """Recover verifier from state. Returns None if signature invalid."""
+        import hmac as _hmac
+        try:
+            # Re-pad base64
+            padded = state + "=" * (-len(state) % 4)
+            raw    = _b64.urlsafe_b64decode(padded).decode()
+            verifier, sig = raw.split("||", 1)
+            expected = _hmac.new(
+                CONSUMER_SECRET.encode(),
+                verifier.encode(),
+                _hs.sha256
+            ).hexdigest()[:16]
+            if _hmac.compare_digest(sig, expected):
+                return verifier
+        except Exception:
+            pass
+        return None
+
     def _auth_url(state: str, challenge: str) -> str:
         params = {
             "client_id":             CONSUMER_KEY,
@@ -3134,20 +3171,24 @@ if page == "🏆 My Yahoo League":
     if "code" in qp and st.session_state["yahoo_token"] is None:
         code      = qp["code"]
         ret_state = qp.get("state","")
-        verifier  = st.session_state.get("yahoo_pkce_verifier")
 
-        if verifier and ret_state == st.session_state.get("yahoo_oauth_state",""):
+        # Recover verifier from the state parameter itself —
+        # session_state is reset on page reload so we can't rely on it here
+        verifier = _decode_state(ret_state)
+
+        if verifier:
             with st.spinner("Exchanging authorization code for tokens..."):
                 tok = _exchange_code(code, verifier)
             if "error" in tok:
                 st.error(f"OAuth error: {tok['error']}")
+                st.query_params.clear()
             else:
-                st.session_state["yahoo_token"] = tok
-                # Clear code from URL cleanly
+                st.session_state["yahoo_token"]    = tok
+                st.session_state["yahoo_auth_url"] = None  # reset so a fresh URL is made next time
                 st.query_params.clear()
                 st.rerun()
         else:
-            st.warning("OAuth state mismatch — please try connecting again.")
+            st.warning("Could not verify OAuth state. Please try connecting again.")
             st.query_params.clear()
 
     # ── Main page UI ──────────────────────────────────────────
@@ -3163,10 +3204,9 @@ if page == "🏆 My Yahoo League":
         # Generate auth URL and store PKCE state
         if "yahoo_auth_url" not in st.session_state or st.session_state.get("yahoo_auth_url") is None:
             verifier, challenge = _pkce_pair()
-            state = _sec.token_hex(16)
-            st.session_state["yahoo_pkce_verifier"] = verifier
-            st.session_state["yahoo_oauth_state"]   = state
-            st.session_state["yahoo_auth_url"]      = _auth_url(state, challenge)
+            # Embed verifier IN the state so it survives the page reload on redirect
+            state = _make_state(verifier)
+            st.session_state["yahoo_auth_url"] = _auth_url(state, challenge)
 
         auth_url = st.session_state["yahoo_auth_url"]
 
