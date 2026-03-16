@@ -3170,21 +3170,23 @@ if page == "🏆 My Yahoo League":
 
         auth_url = st.session_state["yahoo_auth_url"]
 
-        # Use a big styled link — must be a real <a> tag so the browser
-        # navigates directly (meta-refresh is blocked by Streamlit's CSP)
-        st.markdown(
-            f"""
-            <a href="{auth_url}" target="_self"
-               style="display:inline-block;padding:12px 28px;background:#6001D2;
-                      color:white;border-radius:8px;font-size:16px;font-weight:bold;
-                      text-decoration:none;">
-               🔗 Connect Yahoo Fantasy
-            </a>
-            """,
-            unsafe_allow_html=True,
+        # st.link_button opens the URL in the same tab (target="_self" equivalent)
+        # This is the correct Streamlit-native way — avoids iframe/CSP issues
+        st.link_button(
+            "🔗 Connect Yahoo Fantasy",
+            auth_url,
+            type="primary",
+            use_container_width=False,
         )
-        st.caption("Clicking the button above takes you to Yahoo's login page. "
-                   "After authorizing, you'll be redirected back here automatically.")
+        st.caption(
+            "Clicking above takes you to Yahoo's login page. "
+            "After authorizing, Yahoo will redirect you back here automatically."
+        )
+        st.info(
+            "💡 **Note:** After clicking, you may see Yahoo's login page open. "
+            "Once you approve access, you'll be brought back to this page with "
+            "your league data loaded."
+        )
     else:
         # ── Authenticated ─────────────────────────────────────
         tok     = st.session_state["yahoo_token"]
