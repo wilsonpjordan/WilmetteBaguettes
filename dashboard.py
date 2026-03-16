@@ -18,6 +18,7 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from scipy import stats as scipy_stats
+import json, time, urllib.parse, hashlib
 
 warnings.filterwarnings("ignore")
 
@@ -895,6 +896,7 @@ page = st.sidebar.radio("Navigate", [
     "⚙️ Weight Dashboard",
     "🏟️ Draft Room",
     "🎲 Monte Carlo Sim",
+    "🏆 My Yahoo League",
 ])
 st.sidebar.markdown("---")
 using_demo = not any(f.startswith("batting_") for f in os.listdir(CACHE_DIR)) \
@@ -2976,3 +2978,704 @@ elif page == "🎲 Monte Carlo Sim":
                 - Your weekly totals are compared directly to opponent weekly totals, category by category
                 - **Reference points:** .500 = 100W | Good season = 110W | Great season = 120W+ | Elite = 130W+
                 """)
+
+
+# ═════════════════════════════════════════════════════════════
+
+# ═════════════════════════════════════════════════════════════
+#  PAGE 8 — MY YAHOO LEAGUE  (OAuth2 PKCE flow for Streamlit Cloud)
+# ═════════════════════════════════════════════════════════════
+#
+#  Flow:
+#  1. App builds Yahoo OAuth URL using consumer_key from st.secrets
+#  2. User clicks "Connect" → Yahoo login page opens
+#  3. Yahoo redirects back with ?code=... in the URL
+#  4. App catches the code via st.query_params, exchanges it for tokens
+#  5. Tokens stored in st.session_state for the session
+#  6. All API calls use the session access_token
+#  7. Auto-refresh when token is near expiry using refresh_token
+#
+
+if page == "🏆 My Yahoo League":
+    import requests as _req
+    import base64 as _b64
+    import hashlib as _hs
+    import secrets as _sec
+    import urllib.parse as _up
+    import time as _time
+
+    YAHOO_AUTH_URL    = "https://api.login.yahoo.com/oauth2/request_auth"
+    YAHOO_TOKEN_URL   = "https://api.login.yahoo.com/oauth2/get_token"
+    YAHOO_API_BASE    = "https://fantasysports.yahooapis.com/fantasy/v2"
+    REDIRECT_URI      = "https://wilmettebaguettes-gmaswasa6yvu3ssqlb9tub.streamlit.app/"
+
+    # Read credentials from Streamlit secrets (never from repo)
+    try:
+        CONSUMER_KEY    = st.secrets["yahoo"]["consumer_key"]
+        CONSUMER_SECRET = st.secrets["yahoo"]["consumer_secret"]
+    except Exception:
+        st.error("⚠️ Yahoo credentials not found in Streamlit secrets. "
+                 "Go to your app **Settings → Secrets** and add:\n\n"
+                 "```toml\n[yahoo]\nconsumer_key = \"...\"\nconsumer_secret = \"...\"\n```")
+        st.stop()
+
+    # ── PKCE helpers ──────────────────────────────────────────
+    def _pkce_pair():
+        verifier  = _sec.token_urlsafe(64)
+        challenge = _b64.urlsafe_b64encode(
+            _hs.sha256(verifier.encode()).digest()
+        ).rstrip(b"=").decode()
+        return verifier, challenge
+
+    def _auth_url(state: str, challenge: str) -> str:
+        params = {
+            "client_id":             CONSUMER_KEY,
+            "redirect_uri":          REDIRECT_URI,
+            "response_type":         "code",
+            "scope":                 "fspt-r",
+            "state":                 state,
+            "code_challenge":        challenge,
+            "code_challenge_method": "S256",
+        }
+        return YAHOO_AUTH_URL + "?" + _up.urlencode(params)
+
+    def _exchange_code(code: str, verifier: str) -> dict:
+        """Exchange auth code for access + refresh tokens."""
+        creds = _b64.b64encode(f"{CONSUMER_KEY}:{CONSUMER_SECRET}".encode()).decode()
+        r = _req.post(YAHOO_TOKEN_URL, headers={
+            "Authorization": f"Basic {creds}",
+            "Content-Type":  "application/x-www-form-urlencoded",
+        }, data={
+            "grant_type":    "authorization_code",
+            "code":          code,
+            "redirect_uri":  REDIRECT_URI,
+            "code_verifier": verifier,
+        }, timeout=15)
+        if r.status_code != 200:
+            return {"error": f"Token exchange failed ({r.status_code}): {r.text[:400]}"}
+        d = r.json()
+        d["issued_at"] = _time.time()
+        return d
+
+    def _refresh_token(refresh_tok: str) -> dict:
+        """Use refresh token to get a new access token."""
+        creds = _b64.b64encode(f"{CONSUMER_KEY}:{CONSUMER_SECRET}".encode()).decode()
+        r = _req.post(YAHOO_TOKEN_URL, headers={
+            "Authorization": f"Basic {creds}",
+            "Content-Type":  "application/x-www-form-urlencoded",
+        }, data={
+            "grant_type":    "refresh_token",
+            "refresh_token": refresh_tok,
+            "redirect_uri":  REDIRECT_URI,
+        }, timeout=15)
+        if r.status_code != 200:
+            return {"error": f"Refresh failed ({r.status_code}): {r.text[:400]}"}
+        d = r.json()
+        d["issued_at"] = _time.time()
+        return d
+
+    def _api(path: str) -> dict:
+        """Authenticated Yahoo Fantasy API call. Auto-refreshes if needed."""
+        tok = st.session_state.get("yahoo_token", {})
+        if not tok:
+            return {"error": "not_authenticated"}
+
+        # Refresh if within 5 min of expiry
+        age = _time.time() - tok.get("issued_at", 0)
+        expires_in = tok.get("expires_in", 3600)
+        if age > expires_in - 300:
+            new_tok = _refresh_token(tok.get("refresh_token",""))
+            if "error" not in new_tok:
+                st.session_state["yahoo_token"] = new_tok
+                tok = new_tok
+            else:
+                return {"error": "Token expired and refresh failed. Please reconnect."}
+
+        headers = {
+            "Authorization": f"Bearer {tok['access_token']}",
+            "Accept":        "application/json",
+        }
+        url = f"{YAHOO_API_BASE}{path}?format=json"
+        try:
+            r = _req.get(url, headers=headers, timeout=15)
+            if r.status_code == 401:
+                # Try one refresh on 401
+                new_tok = _refresh_token(tok.get("refresh_token",""))
+                if "error" not in new_tok:
+                    st.session_state["yahoo_token"] = new_tok
+                    headers["Authorization"] = f"Bearer {new_tok['access_token']}"
+                    r = _req.get(url, headers=headers, timeout=15)
+                else:
+                    return {"error": "401 — please reconnect Yahoo."}
+            if r.status_code != 200:
+                return {"error": f"HTTP {r.status_code}: {r.text[:300]}"}
+            return r.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    # ── OAuth state init ──────────────────────────────────────
+    if "yahoo_oauth_state"    not in st.session_state:
+        st.session_state["yahoo_oauth_state"]    = None
+    if "yahoo_pkce_verifier"  not in st.session_state:
+        st.session_state["yahoo_pkce_verifier"]  = None
+    if "yahoo_token"          not in st.session_state:
+        st.session_state["yahoo_token"]          = None
+    if "yahoo_league_key"     not in st.session_state:
+        st.session_state["yahoo_league_key"]     = None
+    if "yahoo_my_team_key"    not in st.session_state:
+        st.session_state["yahoo_my_team_key"]    = None
+    if "yahoo_my_team_name"   not in st.session_state:
+        st.session_state["yahoo_my_team_name"]   = None
+
+    # ── Catch OAuth callback code from URL ────────────────────
+    qp = st.query_params
+    if "code" in qp and st.session_state["yahoo_token"] is None:
+        code      = qp["code"]
+        ret_state = qp.get("state","")
+        verifier  = st.session_state.get("yahoo_pkce_verifier")
+
+        if verifier and ret_state == st.session_state.get("yahoo_oauth_state",""):
+            with st.spinner("Exchanging authorization code for tokens..."):
+                tok = _exchange_code(code, verifier)
+            if "error" in tok:
+                st.error(f"OAuth error: {tok['error']}")
+            else:
+                st.session_state["yahoo_token"] = tok
+                # Clear code from URL cleanly
+                st.query_params.clear()
+                st.rerun()
+        else:
+            st.warning("OAuth state mismatch — please try connecting again.")
+            st.query_params.clear()
+
+    # ── Main page UI ──────────────────────────────────────────
+    st.title("🏆 My Yahoo League")
+
+    if st.session_state["yahoo_token"] is None:
+        # ── Not authenticated ─────────────────────────────────
+        st.markdown("### Connect your Yahoo Fantasy account")
+        st.markdown(
+            "Click below to securely authorize this app with Yahoo. "
+            "You'll be redirected to Yahoo's login page, then brought back here automatically."
+        )
+        if st.button("🔗 Connect Yahoo Fantasy", type="primary", key="btn_yahoo_connect"):
+            verifier, challenge = _pkce_pair()
+            state = _sec.token_hex(16)
+            st.session_state["yahoo_pkce_verifier"] = verifier
+            st.session_state["yahoo_oauth_state"]   = state
+            auth_url = _auth_url(state, challenge)
+            # Redirect user to Yahoo
+            st.markdown(
+                f'<meta http-equiv="refresh" content="0; url={auth_url}">',
+                unsafe_allow_html=True
+            )
+            st.markdown(
+                f"[Click here if not redirected automatically]({auth_url})"
+            )
+    else:
+        # ── Authenticated ─────────────────────────────────────
+        tok     = st.session_state["yahoo_token"]
+        age_min = (_time.time() - tok.get("issued_at", 0)) / 60
+        exp_min = tok.get("expires_in", 3600) / 60
+
+        col_title, col_disc = st.columns([5,1])
+        col_title.markdown("### ✅ Connected to Yahoo Fantasy")
+        col_title.caption(f"Token age: {age_min:.0f} min / {exp_min:.0f} min — "
+                          f"{'🟢 valid' if age_min < exp_min - 5 else '🟡 refreshing soon'}")
+        if col_disc.button("Disconnect", key="btn_yahoo_disc"):
+            for k in ["yahoo_token","yahoo_league_key","yahoo_my_team_key","yahoo_my_team_name"]:
+                st.session_state[k] = None
+            st.rerun()
+
+        # ── League selector ───────────────────────────────────
+        if st.session_state["yahoo_league_key"] is None:
+            with st.spinner("Loading your leagues..."):
+                lg_resp = _api("/users;use_login=1/games;game_keys=mlb/leagues")
+
+            if "error" in lg_resp:
+                st.error(lg_resp["error"])
+                st.stop()
+
+            leagues = []
+            try:
+                users = lg_resp["fantasy_content"]["users"]["0"]["user"]
+                games = users[1]["games"]
+                for gk, gv in games.items():
+                    if gk == "count": continue
+                    game_lgs = gv["game"][1].get("leagues", {})
+                    for lk, lv in game_lgs.items():
+                        if lk == "count": continue
+                        lg = lv["league"][0]
+                        leagues.append({
+                            "key":    lg.get("league_key",""),
+                            "name":   lg.get("name",""),
+                            "teams":  lg.get("num_teams","?"),
+                            "type":   lg.get("scoring_type",""),
+                            "season": lg.get("season",""),
+                            "draft":  lg.get("draft_status",""),
+                        })
+            except Exception as e:
+                st.error(f"Could not parse leagues: {e}")
+                st.stop()
+
+            if not leagues:
+                st.info("No active MLB leagues found on this Yahoo account.")
+                st.stop()
+
+            st.markdown("#### Select your league")
+            for lg in leagues:
+                label = f"**{lg['name']}** — {lg['season']} · {lg['teams']} teams · {lg['type']} · Draft: {lg['draft']}"
+                if st.button(label, key=f"lg_{lg['key']}"):
+                    st.session_state["yahoo_league_key"] = lg["key"]
+                    # Fetch my team key
+                    teams_resp = _api(f"/league/{lg['key']}/teams")
+                    if "error" not in teams_resp:
+                        try:
+                            teams = teams_resp["fantasy_content"]["league"][1]["teams"]
+                            for k, v in teams.items():
+                                if k == "count": continue
+                                t = v["team"][0]
+                                is_mine = next((x.get("is_owned_by_current_login",0)
+                                                for x in t if isinstance(x,dict)), 0)
+                                if is_mine:
+                                    st.session_state["yahoo_my_team_key"] = next(
+                                        (x["team_key"] for x in t if isinstance(x,dict) and "team_key" in x), None)
+                                    st.session_state["yahoo_my_team_name"] = next(
+                                        (x["name"] for x in t if isinstance(x,dict) and "name" in x), "My Team")
+                                    break
+                        except Exception:
+                            pass
+                    st.rerun()
+        else:
+            # ── League loaded — show tabs ─────────────────────
+            league_key    = st.session_state["yahoo_league_key"]
+            my_team_key   = st.session_state["yahoo_my_team_key"]
+            my_team_name  = st.session_state["yahoo_my_team_name"] or "My Team"
+
+            st.markdown(f"**League key:** `{league_key}` | **My team:** {my_team_name}")
+            if st.button("← Switch league", key="btn_switch_lg"):
+                st.session_state["yahoo_league_key"]   = None
+                st.session_state["yahoo_my_team_key"]  = None
+                st.session_state["yahoo_my_team_name"] = None
+                st.rerun()
+
+            ytab_roster, ytab_stand, ytab_matchup, ytab_stream = st.tabs([
+                "👥 My Roster", "📊 Standings", "⚔️ This Week", "🌊 Streamers"
+            ])
+
+            # ── helpers ───────────────────────────────────────
+            def _enrich_hitter(name):
+                m = bat_rec[bat_rec["Name"].str.lower() == name.lower()]
+                if m.empty: return {}
+                r = m.iloc[0]
+                return {"Z": round(float(r.get("composite",0)),2),
+                        "HR": int(r["HR"]) if pd.notna(r.get("HR")) else "",
+                        "R":  int(r["R"])  if pd.notna(r.get("R"))  else "",
+                        "RBI":int(r["RBI"])if pd.notna(r.get("RBI"))else "",
+                        "SB": int(r["SB"]) if pd.notna(r.get("SB")) else "",
+                        "AVG":round(float(r["AVG"]),3) if pd.notna(r.get("AVG")) else ""}
+
+            def _enrich_pitcher(name):
+                m = pit_rec[pit_rec["Name"].str.lower() == name.lower()]
+                if m.empty: return {}
+                r = m.iloc[0]
+                return {"Z": round(float(r.get("composite",0)),2),
+                        "W":  int(r["W"])   if pd.notna(r.get("W"))   else "",
+                        "SV": int(r["SV"])  if pd.notna(r.get("SV"))  else "",
+                        "SO": int(r["SO"])  if pd.notna(r.get("SO"))  else "",
+                        "ERA":round(float(r["ERA"]),2)  if pd.notna(r.get("ERA"))  else "",
+                        "WHIP":round(float(r["WHIP"]),3)if pd.notna(r.get("WHIP"))else ""}
+
+            def _parse_players_list(raw: dict) -> list[dict]:
+                players = []
+                try:
+                    items = raw["fantasy_content"]["league"][1]["players"]
+                    for k, v in items.items():
+                        if k == "count": continue
+                        p0 = v["player"][0]
+                        name = next((x["name"]["full"] for x in p0 if isinstance(x,dict) and "name" in x), None)
+                        pos  = next((x["display_position"] for x in p0 if isinstance(x,dict) and "display_position" in x), "")
+                        team = next((x["editorial_team_abbr"] for x in p0 if isinstance(x,dict) and "editorial_team_abbr" in x), "")
+                        stat = next((x.get("status","") for x in p0 if isinstance(x,dict) and "status" in x), "")
+                        if name:
+                            players.append({"name":name,"pos":pos,"team":team,"status":stat})
+                except Exception:
+                    pass
+                return players
+
+            # ── MY ROSTER ─────────────────────────────────────
+            with ytab_roster:
+                st.markdown("#### 👥 Current Roster")
+                if st.button("🔄 Refresh Roster", key="btn_roster"):
+                    st.session_state.pop("yahoo_roster_data", None)
+
+                if "yahoo_roster_data" not in st.session_state:
+                    with st.spinner("Fetching roster..."):
+                        r_data = _api(f"/team/{my_team_key}/roster/players")
+                        st.session_state["yahoo_roster_data"] = r_data
+
+                r_data = st.session_state["yahoo_roster_data"]
+                if "error" in r_data:
+                    st.error(r_data["error"])
+                else:
+                    try:
+                        roster_players = []
+                        entries = r_data["fantasy_content"]["team"][1]["roster"]["0"]["players"]
+                        for k, v in entries.items():
+                            if k == "count": continue
+                            p0 = v["player"][0]
+                            name  = next((x["name"]["full"] for x in p0 if isinstance(x,dict) and "name" in x), "?")
+                            pos   = next((x["display_position"] for x in p0 if isinstance(x,dict) and "display_position" in x), "")
+                            team  = next((x["editorial_team_abbr"] for x in p0 if isinstance(x,dict) and "editorial_team_abbr" in x), "")
+                            stat  = next((x.get("status","") for x in p0 if isinstance(x,dict) and "status" in x), "Active")
+                            sel_pos = next((x.get("selected_position",[{}])[1].get("position","") for x in v["player"] if isinstance(x,dict) and "selected_position" in x), "")
+                            is_hit = any(x in pos for x in ["1B","2B","3B","SS","OF","C","Util","DH"])
+                            enrich = _enrich_hitter(name) if is_hit else _enrich_pitcher(name)
+                            roster_players.append({"Name":name,"Slot":sel_pos,"Pos":pos,"Team":team,
+                                                    "Status":stat or "Active", **enrich})
+
+                        rdf = pd.DataFrame(roster_players)
+                        hitters  = rdf[rdf["Pos"].str.contains("1B|2B|3B|SS|OF|C|DH|Util", na=False)]
+                        pitchers = rdf[~rdf["Pos"].str.contains("1B|2B|3B|SS|OF|C|DH|Util", na=False)]
+
+                        rhc, rpc = st.columns(2)
+                        with rhc:
+                            st.markdown("**⚾ Hitters**")
+                            h_cols = [c for c in ["Name","Slot","Pos","Team","Status","Z","HR","R","RBI","SB","AVG"] if c in hitters.columns]
+                            st.dataframe(hitters[h_cols], use_container_width=True, hide_index=True)
+                        with rpc:
+                            st.markdown("**🎯 Pitchers**")
+                            p_cols = [c for c in ["Name","Slot","Pos","Team","Status","Z","W","SV","SO","ERA","WHIP"] if c in pitchers.columns]
+                            st.dataframe(pitchers[p_cols], use_container_width=True, hide_index=True)
+
+                        # Pre-fill MC sim
+                        st.markdown("---")
+                        valid_h = [p["Name"] for p in roster_players
+                                   if any(x in p["Pos"] for x in ["1B","2B","3B","SS","OF","C","DH","Util"])
+                                   and p["Name"] in bat_all["Name"].values]
+                        valid_p = [p["Name"] for p in roster_players
+                                   if any(x in p["Pos"] for x in ["SP","RP","P"])
+                                   and p["Name"] in pit_all["Name"].values]
+                        if st.button("⚡ Load this roster into Monte Carlo Sim", key="btn_mc_prefill"):
+                            st.session_state["mc_hitters"]  = valid_h
+                            st.session_state["mc_pitchers"] = valid_p
+                            st.success(f"✅ Loaded {len(valid_h)} hitters + {len(valid_p)} pitchers. "
+                                       "Go to 🎲 Monte Carlo Sim to run projections.")
+                    except Exception as e:
+                        st.warning(f"Could not parse roster: {e}")
+                        st.json(r_data)
+
+            # ── STANDINGS ─────────────────────────────────────
+            with ytab_stand:
+                st.markdown("#### 📊 League Standings")
+                if st.button("🔄 Refresh Standings", key="btn_stand"):
+                    st.session_state.pop("yahoo_standings_data", None)
+
+                if "yahoo_standings_data" not in st.session_state:
+                    with st.spinner("Fetching standings..."):
+                        st.session_state["yahoo_standings_data"] = _api(f"/league/{league_key}/standings")
+
+                sd = st.session_state["yahoo_standings_data"]
+                if "error" in sd:
+                    st.error(sd["error"])
+                else:
+                    try:
+                        rows = []
+                        teams = sd["fantasy_content"]["league"][1]["standings"][0]["teams"]
+                        for k, v in teams.items():
+                            if k == "count": continue
+                            t      = v["team"]
+                            info   = t[0]
+                            tstats = t[2]["team_standings"] if len(t) > 2 else {}
+                            name   = next((x["name"] for x in info if isinstance(x,dict) and "name" in x), "?")
+                            rec    = tstats.get("outcome_totals", {})
+                            is_me  = name == my_team_name
+                            rows.append({
+                                "Rank":  tstats.get("rank","?"),
+                                "Team":  ("🟢 " if is_me else "") + name,
+                                "W":     rec.get("wins","?"),
+                                "L":     rec.get("losses","?"),
+                                "T":     rec.get("ties","?"),
+                                "Win%":  rec.get("percentage","?"),
+                                "Pts For":   tstats.get("points_for",""),
+                                "Pts Agnst": tstats.get("points_against",""),
+                            })
+                        sdf = pd.DataFrame(rows)
+                        try:
+                            sdf["Rank"] = sdf["Rank"].astype(int)
+                            sdf = sdf.sort_values("Rank")
+                        except Exception: pass
+
+                        def _rc(val):
+                            try:
+                                v = int(val)
+                                if v == 1:  return "color:#FFD700;font-weight:bold"
+                                if v <= 4:  return "color:#21C354"
+                                if v <= 8:  return "color:#FFA500"
+                                return "color:#FF4B4B"
+                            except: return ""
+
+                        st.dataframe(sdf.style.map(_rc, subset=["Rank"]),
+                                     use_container_width=True, hide_index=True)
+                    except Exception as e:
+                        st.warning(f"Could not parse standings: {e}")
+                        st.json(sd)
+
+            # ── THIS WEEK'S MATCHUP ───────────────────────────
+            with ytab_matchup:
+                st.markdown("#### ⚔️ Current Week Matchup")
+                if st.button("🔄 Refresh Matchup", key="btn_mu"):
+                    st.session_state.pop("yahoo_matchup_data", None)
+
+                if "yahoo_matchup_data" not in st.session_state:
+                    with st.spinner("Fetching matchup..."):
+                        st.session_state["yahoo_matchup_data"] = _api(
+                            f"/team/{my_team_key}/matchups")
+
+                mu_d = st.session_state["yahoo_matchup_data"]
+                if "error" in mu_d:
+                    st.error(mu_d["error"])
+                else:
+                    try:
+                        matchups_raw = mu_d["fantasy_content"]["team"][1]["matchups"]
+                        # Find current week
+                        cur_mu = None
+                        for mk, mv in matchups_raw.items():
+                            if mk == "count": continue
+                            mu = mv.get("matchup", mv)
+                            if str(mu.get("is_current_week","0")) == "1":
+                                cur_mu = mu; break
+                        if cur_mu is None:
+                            # Fall back to first matchup
+                            for mk, mv in matchups_raw.items():
+                                if mk == "count": continue
+                                cur_mu = mv.get("matchup", mv); break
+
+                        if not cur_mu:
+                            st.info("No matchup found for this week.")
+                        else:
+                            week = cur_mu.get("week","?")
+                            st.markdown(f"**Week {week}**")
+                            mu_teams = cur_mu["0"]["teams"]
+                            summaries = []
+                            for tk in ["0","1"]:
+                                tm     = mu_teams[tk]["team"]
+                                t_info = tm[0]
+                                name   = next((x["name"] for x in t_info if isinstance(x,dict) and "name" in x),"?")
+                                is_me  = name == my_team_name
+                                # Stat map: stat_id → value
+                                cat_vals = {}
+                                if len(tm) > 1:
+                                    raw_st = tm[1].get("team_stats",{}).get("stats",{})
+                                    for sk, sv in raw_st.items():
+                                        if sk == "count": continue
+                                        s = sv.get("stat",{})
+                                        cat_vals[s.get("stat_id","")] = s.get("value","—")
+                                # Cat win/loss if available
+                                cat_wl = {}
+                                if len(tm) > 1:
+                                    raw_cwl = tm[1].get("team_stats",{}).get("stat_winners",{})
+                                    for sk, sv in raw_cwl.items():
+                                        if sk == "count": continue
+                                        w = sv.get("stat_winner",{})
+                                        cat_wl[w.get("stat_id","")] = w.get("winner_team_key","")
+                                summaries.append({"name":name,"is_me":is_me,
+                                                  "stats":cat_vals,"winners":cat_wl})
+
+                            # Yahoo stat_id → category name map (standard 10-cat)
+                            STAT_MAP = {
+                                "7":"R","12":"HR","13":"RBI","16":"SB","3":"AVG",
+                                "28":"W","32":"SV","42":"SO","26":"ERA","27":"WHIP",
+                            }
+
+                            if len(summaries) == 2:
+                                me  = next((s for s in summaries if s["is_me"]), summaries[0])
+                                opp = next((s for s in summaries if not s["is_me"]), summaries[1])
+                                my_score  = 0
+                                opp_score = 0
+                                mu_rows = []
+                                for sid, cat in STAT_MAP.items():
+                                    my_val  = me["stats"].get(sid,"—")
+                                    opp_val = opp["stats"].get(sid,"—")
+                                    winner_key = me["winners"].get(sid,"")
+                                    if winner_key == my_team_key:
+                                        result = "✅ W"; my_score += 1
+                                    elif winner_key and winner_key != my_team_key:
+                                        result = "❌ L"; opp_score += 1
+                                    else:
+                                        result = "—"
+                                    mu_rows.append({"Category":cat,
+                                                    f"Me ({me['name']})":my_val,
+                                                    f"Opp ({opp['name']})":opp_val,
+                                                    "Result":result})
+
+                                mc1,mc2,mc3 = st.columns(3)
+                                mc1.metric("My Score",  my_score)
+                                mc2.metric("Opp Score", opp_score)
+                                outcome = ("🏆 Winning" if my_score > opp_score else
+                                           "💀 Losing"  if my_score < opp_score else "⚖️ Tied")
+                                mc3.metric("Status", outcome)
+
+                                mu_df = pd.DataFrame(mu_rows)
+                                def _mu_color(val):
+                                    if val == "✅ W": return "color:#21C354;font-weight:bold"
+                                    if val == "❌ L": return "color:#FF4B4B;font-weight:bold"
+                                    return "color:#888"
+                                st.dataframe(mu_df.style.map(_mu_color, subset=["Result"]),
+                                             use_container_width=True, hide_index=True)
+                    except Exception as e:
+                        st.warning(f"Could not parse matchup: {e}")
+                        st.json(mu_d)
+
+            # ── STREAMERS ─────────────────────────────────────
+            with ytab_stream:
+                st.markdown("#### 🌊 Streaming Recommendations")
+                st.caption(
+                    "Free agents scored by streamer value: ERA/WHIP quality × "
+                    "projected starts this week × K rate. Best adds for your H2H matchup."
+                )
+
+                stream_col1, stream_col2 = st.columns(2)
+                stream_pos = stream_col1.selectbox(
+                    "Position", ["SP (Starters)", "RP (Relievers)", "All Pitchers",
+                                 "Hitters (Any)", "OF", "1B/3B", "2B/SS"],
+                    key="stream_pos")
+                stream_sort = stream_col2.selectbox(
+                    "Sort by", ["Streamer Score", "ERA", "WHIP", "K", "Z-Score"],
+                    key="stream_sort")
+
+                if st.button("🔄 Find Streamers", key="btn_streamers"):
+                    st.session_state.pop("yahoo_fa_data", None)
+
+                if "yahoo_fa_data" not in st.session_state:
+                    # Map position filter to Yahoo status param
+                    pos_filter_map = {
+                        "SP (Starters)":   "SP",
+                        "RP (Relievers)":  "RP",
+                        "All Pitchers":    "P",
+                        "Hitters (Any)":   "B",
+                        "OF":              "OF",
+                        "1B/3B":           "CI",
+                        "2B/SS":           "MI",
+                    }
+                    ypos = pos_filter_map.get(stream_pos, "P")
+                    with st.spinner(f"Fetching available {stream_pos}..."):
+                        # Fetch top 50 free agents sorted by % owned (most relevant)
+                        fa_resp = _api(
+                            f"/league/{league_key}/players"
+                            f";status=FA"
+                            f";position={ypos}"
+                            f";sort=AR"
+                            f";count=50"
+                        )
+                        st.session_state["yahoo_fa_data"] = fa_resp
+
+                if "yahoo_fa_data" in st.session_state:
+                    fa_d = st.session_state["yahoo_fa_data"]
+                    if "error" in fa_d:
+                        st.error(fa_d["error"])
+                    else:
+                        fa_players = _parse_players_list(fa_d)
+
+                        if not fa_players:
+                            st.info("No free agents found — season may not have started yet, "
+                                    "or all players are rostered.")
+                        else:
+                            enriched = []
+                            is_pitcher_tab = stream_pos in [
+                                "SP (Starters)","RP (Relievers)","All Pitchers"]
+
+                            for p in fa_players:
+                                name = p["name"]
+                                pos  = p["pos"]
+                                team = p["team"]
+
+                                if is_pitcher_tab:
+                                    stats = _enrich_pitcher(name)
+                                    if not stats:
+                                        continue
+                                    era  = float(stats.get("ERA", 4.50) or 4.50)
+                                    whip = float(stats.get("WHIP", 1.30) or 1.30)
+                                    k    = float(stats.get("SO", 150) or 150)
+                                    z    = float(stats.get("Z", 0) or 0)
+                                    # Streamer score: rewards low ERA/WHIP + high K
+                                    # Normalize: ERA 2=best(1.0) ERA 6=worst(0.0)
+                                    era_score  = max(0, min(1, (6.0 - era)  / 4.0))
+                                    whip_score = max(0, min(1, (1.80 - whip)/ 0.80))
+                                    k_score    = min(1, k / 250.0)
+                                    # SP bonus (more weekly impact)
+                                    sp_bonus   = 0.15 if "SP" in pos else 0.0
+                                    streamer_score = round(
+                                        (era_score * 0.35 + whip_score * 0.35 +
+                                         k_score * 0.20 + sp_bonus + z * 0.02),
+                                        3)
+                                    enriched.append({
+                                        "Name": name, "Pos": pos, "Team": team,
+                                        "Z": stats.get("Z",""),
+                                        "ERA": stats.get("ERA",""),
+                                        "WHIP": stats.get("WHIP",""),
+                                        "K": stats.get("SO",""),
+                                        "W": stats.get("W",""),
+                                        "SV": stats.get("SV",""),
+                                        "Streamer Score": streamer_score,
+                                        "Rec": (
+                                            "🔥 Must Add"  if streamer_score >= 0.70 else
+                                            "✅ Strong Add" if streamer_score >= 0.55 else
+                                            "📋 Spot Start" if streamer_score >= 0.40 else
+                                            "⚠️ Risky"
+                                        )
+                                    })
+                                else:
+                                    stats = _enrich_hitter(name)
+                                    if not stats:
+                                        continue
+                                    z = float(stats.get("Z",0) or 0)
+                                    enriched.append({
+                                        "Name": name, "Pos": pos, "Team": team,
+                                        "Z": stats.get("Z",""),
+                                        "HR": stats.get("HR",""),
+                                        "R":  stats.get("R",""),
+                                        "RBI":stats.get("RBI",""),
+                                        "SB": stats.get("SB",""),
+                                        "AVG":stats.get("AVG",""),
+                                        "Streamer Score": round(z, 3),
+                                        "Rec": (
+                                            "🔥 Must Add"   if z >= 2.0  else
+                                            "✅ Strong Add"  if z >= 1.0  else
+                                            "📋 Good Pickup" if z >= 0.0  else
+                                            "⚠️ Risky"
+                                        )
+                                    })
+
+                            if not enriched:
+                                st.info("None of the available players matched our FanGraphs data.")
+                            else:
+                                edf = pd.DataFrame(enriched)
+                                sort_col_map = {
+                                    "Streamer Score": ("Streamer Score", False),
+                                    "ERA":   ("ERA",   True),
+                                    "WHIP":  ("WHIP",  True),
+                                    "K":     ("K",     False),
+                                    "Z-Score":("Z",    False),
+                                }
+                                sc, asc = sort_col_map.get(stream_sort, ("Streamer Score", False))
+                                if sc in edf.columns:
+                                    edf = edf.sort_values(sc, ascending=asc)
+
+                                def _rec_color(val):
+                                    if "Must"   in str(val): return "color:#21C354;font-weight:bold"
+                                    if "Strong" in str(val): return "color:#21C354"
+                                    if "Spot"   in str(val) or "Good" in str(val): return "color:#FFA500"
+                                    return "color:#FF4B4B"
+
+                                st.dataframe(
+                                    edf.style.map(_rec_color, subset=["Rec"]),
+                                    use_container_width=True, hide_index=True)
+
+                                st.markdown("---")
+                                st.caption(
+                                    "**Streamer Score formula (pitchers):** "
+                                    "ERA quality (35%) + WHIP quality (35%) + K rate (20%) + "
+                                    "SP bonus (15%) + composite z (10%). "
+                                    "🔥 Must Add = 0.70+ | ✅ Strong = 0.55+ | 📋 Spot = 0.40+"
+                                )
