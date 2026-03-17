@@ -1707,6 +1707,31 @@ elif page == "🎯 Strategy & Target List":
                 access_token = st.session_state["yahoo_token"]["access_token"]
                 import requests as _r
 
+                def _safe_float(val, default):
+                    try: return float(val) if val not in (None, "", "—") else default
+                    except: return default
+
+                def _extract_da(obj):
+                    """
+                    Recursively search any dict/list structure for draft_analysis.
+                    Yahoo's API nests it inconsistently — sometimes it's at player[1],
+                    sometimes inside a list at player[1][0], sometimes deeper.
+                    Returns a dict with average_pick etc., or {} if not found.
+                    """
+                    if isinstance(obj, dict):
+                        if "average_pick" in obj:
+                            return obj  # this IS the draft_analysis dict
+                        if "draft_analysis" in obj:
+                            return _extract_da(obj["draft_analysis"])
+                        for v in obj.values():
+                            found = _extract_da(v)
+                            if found: return found
+                    elif isinstance(obj, list):
+                        for item in obj:
+                            found = _extract_da(item)
+                            if found: return found
+                    return {}
+
                 def _parse_adp_response(raw: dict) -> dict:
                     """Parse players list response and extract draft_analysis."""
                     result = {}
@@ -1715,27 +1740,18 @@ elif page == "🎯 Strategy & Target List":
                         for k, v in items.items():
                             if k == "count": continue
                             player = v["player"]
-                            p0   = player[0]
+                            p0 = player[0]
                             name = next((x["name"]["full"] for x in p0
-                                         if isinstance(x,dict) and "name" in x), None)
-                            # draft_analysis can be at index 1 or nested
-                            da = {}
-                            for block in player[1:]:
-                                if isinstance(block, dict):
-                                    if "draft_analysis" in block:
-                                        da = block["draft_analysis"]
-                                        break
-                                    # sometimes nested under player stats
-                                    for key in block:
-                                        if key == "draft_analysis":
-                                            da = block[key]
-                                            break
-                            if name:
-                                result[name] = {
-                                    "adp":     float(da.get("average_pick",  999) or 999),
-                                    "adp_rnd": float(da.get("average_round", 99)  or 99),
-                                    "pct_own": float(da.get("percent_drafted", 0)  or 0),
-                                }
+                                         if isinstance(x, dict) and "name" in x), None)
+                            if not name:
+                                continue
+                            # Search entire player structure for draft_analysis
+                            da = _extract_da(player[1:])
+                            result[name] = {
+                                "adp":     _safe_float(da.get("average_pick"),  999),
+                                "adp_rnd": _safe_float(da.get("average_round"), 99),
+                                "pct_own": _safe_float(da.get("percent_drafted"), 0),
+                            }
                     except Exception as e:
                         st.warning(f"Parse error: {e}")
                     return result
@@ -1785,10 +1801,24 @@ elif page == "🎯 Strategy & Target List":
                     st.rerun()
                 else:
                     st.error(
-                        "No ADP data returned. This usually means: "
-                        "your draft has not happened yet (ADP populates from actual/mock drafts), "
-                        "or the league game key needs updating."
+                        "No ADP data returned. Yahoo ADP populates from "
+                        "actual/mock drafts — it may not be available yet "
+                        "if your draft hasn't happened."
                     )
+                    # Show raw response to help debug
+                    try:
+                        debug_url = (
+                            f"https://fantasysports.yahooapis.com/fantasy/v2"
+                            f"/league/{league_key_adp}/players"
+                            f";position=B;sort=AR;start=0;count=3"
+                            f";out=draft_analysis?format=json"
+                        )
+                        debug_r = _r.get(debug_url, headers=headers, timeout=10)
+                        with st.expander("🔍 Debug: Raw Yahoo API response (first 3 players)"):
+                            st.json(debug_r.json() if debug_r.status_code == 200
+                                    else {"error": debug_r.status_code, "body": debug_r.text[:500]})
+                    except Exception as de:
+                        st.caption(f"Debug fetch failed: {de}")
 
 
         # ── Build value board ─────────────────────────────────
