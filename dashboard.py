@@ -1578,8 +1578,277 @@ elif page == "📊 Category Scarcity":
 
 elif page == "🎯 Strategy & Target List":
     st.title("🎯 Strategy & Target List")
-    tab_strat, tab_targets, tab_compare = st.tabs(["🗺️ Draft Strategy Planner","⭐ My Target List","📊 Compare Targets"])
 
+    # ── ADP loader (Yahoo API if connected, else None) ────────
+    yahoo_connected = st.session_state.get("yahoo_token") is not None
+    league_key_adp  = st.session_state.get("yahoo_league_key")
+
+    @st.cache_data(ttl=1800, show_spinner=False)
+    def _fetch_adp_batch(league_key: str, access_token: str,
+                         player_keys: tuple) -> dict:
+        """
+        Fetch draft_analysis (ADP) for up to 25 players at a time.
+        Returns {player_key: {average_pick, average_round, percent_drafted}}
+        """
+        import requests
+        results = {}
+        batch_size = 25
+        keys_list  = list(player_keys)
+        for i in range(0, len(keys_list), batch_size):
+            batch = keys_list[i:i+batch_size]
+            keys_str = ",".join(batch)
+            url = (f"https://fantasysports.yahooapis.com/fantasy/v2"
+                   f"/league/{league_key}/players;player_keys={keys_str}"
+                   f"/draft_analysis?format=json")
+            try:
+                r = requests.get(url,
+                    headers={"Authorization": f"Bearer {access_token}",
+                             "Accept": "application/json"},
+                    timeout=15)
+                if r.status_code != 200:
+                    continue
+                data = r.json()
+                players = data["fantasy_content"]["league"][1]["players"]
+                for k, v in players.items():
+                    if k == "count": continue
+                    p      = v["player"]
+                    p_info = p[0]
+                    da     = p[1].get("draft_analysis", {}) if len(p) > 1 else {}
+                    name   = next((x["name"]["full"] for x in p_info
+                                   if isinstance(x,dict) and "name" in x), None)
+                    if name and da:
+                        results[name] = {
+                            "adp":     float(da.get("average_pick",  999) or 999),
+                            "adp_rnd": float(da.get("average_round", 99)  or 99),
+                            "pct_own": float(da.get("percent_drafted", 0) or 0),
+                        }
+            except Exception:
+                continue
+        return results
+
+    # Cache ADP data in session state to avoid re-fetching on every widget change
+    if "adp_cache" not in st.session_state:
+        st.session_state["adp_cache"] = {}
+
+    def _get_adp(name: str) -> dict:
+        """Return ADP dict for a player name, or empty dict if unavailable."""
+        return st.session_state["adp_cache"].get(name, {})
+
+    def _adp_label(adp_val: float) -> str:
+        if adp_val >= 999: return "—"
+        return f"{adp_val:.1f}"
+
+    def _value_label(z: float, adp: float, league_sz: int = 12) -> str:
+        """Compare z-score rank to ADP. Returns value/reach label."""
+        if adp >= 999: return "—"
+        # Convert z to rough rank among all players
+        z_rank_h = int(bat_rec["composite"].rank(ascending=False).get(
+            bat_rec[bat_rec["composite"] == z].index[0] if len(bat_rec[bat_rec["composite"]==z])>0 else -1, 999))
+        gap = adp - z_rank_h if z_rank_h < 999 else 0
+        if   gap >= 20: return "🔥 Big Value"
+        elif gap >= 10: return "✅ Value"
+        elif gap >= -5: return "➡️ Fair"
+        elif gap >= -15: return "⚠️ Slight Reach"
+        else: return "🚨 Reach"
+
+    tab_adp, tab_strat, tab_targets, tab_compare, tab_grade = st.tabs([
+        "📈 ADP Value Board",
+        "🗺️ Draft Strategy Planner",
+        "⭐ My Target List",
+        "📊 Compare Targets",
+        "🎓 Draft Grade",
+    ])
+
+    # ══════════════════════════════════════════════════════════
+    #  TAB 1 — ADP VALUE BOARD
+    # ══════════════════════════════════════════════════════════
+    with tab_adp:
+        st.markdown("### 📈 ADP Value Board")
+        st.caption(
+            "Compares our FanGraphs-based composite z-score ranking against "
+            "Yahoo ADP. Big positive gap = player going later than they should. "
+            "Big negative gap = being overdrafted."
+        )
+
+        adp_col1, adp_col2, adp_col3 = st.columns(3)
+        adp_ptype  = adp_col1.radio("Player type", ["Hitters","Pitchers"],
+                                    horizontal=True, key="adp_ptype",
+                                    label_visibility="collapsed")
+        adp_filter = adp_col2.selectbox("Show", ["All players","Values only (ADP late)","Reaches (ADP early)","Undrafted sleepers"], key="adp_filter")
+        adp_top_n  = adp_col3.slider("Players shown", 25, 200, 75, 25, key="adp_top_n")
+
+        src_df = bat_rec.copy() if adp_ptype == "Hitters" else pit_rec.copy()
+
+        # ── Load ADP from Yahoo if connected ──────────────────
+        if yahoo_connected and league_key_adp:
+            if st.button("🔄 Load Yahoo ADP for top players", key="btn_load_adp"):
+                access_token = st.session_state["yahoo_token"]["access_token"]
+                # Get player keys for top N players — need to fetch them first
+                with st.spinner("Fetching player keys + ADP from Yahoo..."):
+                    import requests as _r
+                    pos_param = "B" if adp_ptype == "Hitters" else "P"
+                    # Fetch top 200 players with their keys
+                    url = (f"https://fantasysports.yahooapis.com/fantasy/v2"
+                           f"/league/{league_key_adp}/players"
+                           f";position={pos_param};sort=AR;count=200?format=json")
+                    resp = _r.get(url,
+                        headers={"Authorization": f"Bearer {access_token}",
+                                 "Accept": "application/json"}, timeout=20)
+                    if resp.status_code == 200:
+                        raw = resp.json()
+                        pkeys = {}
+                        try:
+                            items = raw["fantasy_content"]["league"][1]["players"]
+                            for k, v in items.items():
+                                if k == "count": continue
+                                p0   = v["player"][0]
+                                name = next((x["name"]["full"] for x in p0 if isinstance(x,dict) and "name" in x), None)
+                                pkey = next((x["player_key"] for x in p0 if isinstance(x,dict) and "player_key" in x), None)
+                                da   = {}
+                                if len(v["player"]) > 1:
+                                    da = v["player"][1].get("draft_analysis", {})
+                                if name:
+                                    st.session_state["adp_cache"][name] = {
+                                        "adp":     float(da.get("average_pick",  999) or 999),
+                                        "adp_rnd": float(da.get("average_round", 99)  or 99),
+                                        "pct_own": float(da.get("percent_drafted", 0)  or 0),
+                                    }
+                        except Exception as e:
+                            st.warning(f"Parse error: {e}")
+                        st.success(f"✅ Loaded ADP for {len(st.session_state['adp_cache'])} players")
+                        st.rerun()
+                    else:
+                        st.error(f"API error {resp.status_code}")
+        elif not yahoo_connected:
+            st.info("💡 Connect your Yahoo account (🏆 My Yahoo League page) to load live ADP from your league.")
+
+        # ── Build value board ─────────────────────────────────
+        rows = []
+        for _, row in src_df.head(adp_top_n + 50).iterrows():
+            name   = row.get("Name","")
+            z      = float(row.get("composite", 0))
+            z_rank = int(src_df["composite"].rank(ascending=False)[row.name])
+            adp_d  = _get_adp(name)
+            adp    = adp_d.get("adp", 999)
+            adp_rnd= adp_d.get("adp_rnd", 99)
+            pct    = adp_d.get("pct_own", 0)
+
+            # Value gap: positive = player going later than our rank (value)
+            gap    = round(adp - z_rank, 1) if adp < 999 else None
+
+            # Value label
+            if gap is None:       val_label = "❓ No ADP"
+            elif gap >= 25:       val_label = "🔥 Big Value"
+            elif gap >= 12:       val_label = "✅ Value"
+            elif gap >= -8:       val_label = "➡️ Fair"
+            elif gap >= -20:      val_label = "⚠️ Reach"
+            else:                 val_label = "🚨 Big Reach"
+
+            r = {
+                "Name":         name,
+                "Our Rank":     z_rank,
+                "ADP":          _adp_label(adp),
+                "ADP Rnd":      f"{adp_rnd:.1f}" if adp < 999 else "—",
+                "Gap":          f"+{gap:.0f}" if gap and gap > 0 else (f"{gap:.0f}" if gap else "—"),
+                "Value":        val_label,
+                "Z-Score":      round(z, 2),
+                "%Owned":       f"{pct*100:.0f}%" if pct else "—",
+            }
+            # Add key stats
+            if adp_ptype == "Hitters":
+                r.update({
+                    "HR":  int(row["HR"])  if pd.notna(row.get("HR"))  else "",
+                    "AVG": round(float(row["AVG"]),3) if pd.notna(row.get("AVG")) else "",
+                    "SB":  int(row["SB"])  if pd.notna(row.get("SB"))  else "",
+                })
+            else:
+                r.update({
+                    "ERA":  round(float(row["ERA"]),2)   if pd.notna(row.get("ERA"))  else "",
+                    "WHIP": round(float(row["WHIP"]),3)  if pd.notna(row.get("WHIP")) else "",
+                    "SO":   int(row["SO"])  if pd.notna(row.get("SO"))  else "",
+                })
+            rows.append(r)
+
+        vdf = pd.DataFrame(rows)
+
+        # Apply filter
+        if adp_filter == "Values only (ADP late)":
+            vdf = vdf[vdf["Gap"].str.startswith("+", na=False) & vdf["Gap"].ne("—")]
+        elif adp_filter == "Reaches (ADP early)":
+            vdf = vdf[vdf["Gap"].str.startswith("-", na=False)]
+        elif adp_filter == "Undrafted sleepers":
+            vdf = vdf[vdf["ADP"] == "—"]
+
+        vdf = vdf.head(adp_top_n)
+
+        def _val_color(val):
+            v = str(val)
+            if "Big Value" in v: return "color:#21C354;font-weight:bold"
+            if "Value"     in v: return "color:#21C354"
+            if "Fair"      in v: return "color:#888"
+            if "Big Reach" in v: return "color:#FF4B4B;font-weight:bold"
+            if "Reach"     in v: return "color:#FFA500"
+            return "color:#aaa"
+
+        def _gap_color(val):
+            try:
+                v = float(str(val).replace("+",""))
+                if v >= 25:  return "color:#21C354;font-weight:bold"
+                if v >= 12:  return "color:#21C354"
+                if v >= -8:  return "color:#888"
+                if v >= -20: return "color:#FFA500"
+                return "color:#FF4B4B"
+            except: return ""
+
+        st.dataframe(
+            vdf.style.map(_val_color, subset=["Value"])
+                     .map(_gap_color, subset=["Gap"]),
+            use_container_width=True, hide_index=True, height=500
+        )
+
+        # ── Top value picks highlight ─────────────────────────
+        big_vals = vdf[vdf["Value"].isin(["🔥 Big Value","✅ Value"])].head(5)
+        if not big_vals.empty:
+            st.markdown("---")
+            st.markdown("#### 🎯 Top Value Picks Right Now")
+            vcols = st.columns(min(5, len(big_vals)))
+            for ci, (_, row) in enumerate(big_vals.iterrows()):
+                vcols[ci].metric(
+                    row["Name"],
+                    f"Rank #{row['Our Rank']}",
+                    f"ADP {row['ADP']} (Gap {row['Gap']})",
+                )
+
+        # ── Category punting planner ──────────────────────────
+        st.markdown("---")
+        st.markdown("#### 🎯 Category Punting Planner")
+        st.caption(
+            "Identify which category to punt based on ADP cost of dominance. "
+            "Punting a weak category lets you load up on others."
+        )
+        punt_cats = st.multiselect(
+            "Categories you're considering punting",
+            ["HR","R","RBI","SB","AVG","W","SV","ERA","WHIP","SO"],
+            key="punt_cats"
+        )
+        if punt_cats:
+            st.markdown("**Impact of punting these categories:**")
+            for cat in punt_cats:
+                is_hit_cat = cat in ["HR","R","RBI","SB","AVG"]
+                df_cat = bat_rec if is_hit_cat else pit_rec
+                z_col  = f"z_{cat}" if cat != "SO" else "z_K"
+                if z_col in df_cat.columns:
+                    top_cat = df_cat.nlargest(10, z_col)[["Name", z_col, "composite"]]
+                    avg_z   = top_cat[z_col].mean()
+                    st.markdown(
+                        f"**{cat}** — Top players average {avg_z:.1f}z in this category. "
+                        f"Punting frees up {'hitting' if is_hit_cat else 'pitching'} "
+                        f"draft capital for other categories."
+                    )
+
+    # ══════════════════════════════════════════════════════════
+    #  TAB 2 — DRAFT STRATEGY PLANNER
+    # ══════════════════════════════════════════════════════════
     with tab_strat:
         st.markdown("### 🗺️ Draft Strategy Planner")
         league_size = st.slider("League size (teams)", 8, 16, 12)
@@ -1588,110 +1857,218 @@ elif page == "🎯 Strategy & Target List":
         h_slots = rs[0].number_input("Hitter roster spots", 1, 15, 9)
         p_slots = rs[1].number_input("Pitcher roster spots", 1, 15, 7)
         st.markdown("---")
-        st.multiselect("Your category priorities (select in order of importance)",
+        cat_priorities = st.multiselect(
+            "Your category priorities (select in order of importance)",
             ["HR","R","RBI","SB","AVG","W","SV","ERA","WHIP","K"],
-            default=["SB","HR","K","ERA","WHIP","R","RBI","AVG","W"])
-        st.markdown("---"); st.markdown("#### 📋 Round-by-Round Guidance")
+            default=["SB","HR","K","ERA","WHIP","R","RBI","AVG","W"]
+        )
+        st.markdown("---")
+        st.markdown("#### 📋 Round-by-Round Guide")
         total_rounds = h_slots + p_slots
-        pick_numbers = [(rd-1)*league_size+your_pick if rd%2==1 else rd*league_size-your_pick+1
-                        for rd in range(1, total_rounds+1)]
+        pick_numbers = [
+            (rd-1)*league_size + your_pick if rd % 2 == 1
+            else rd*league_size - your_pick + 1
+            for rd in range(1, total_rounds+1)
+        ]
         round_advice = {
-            1:("Superstar anchor","Elite 1st-rounders: 60+ HR pace, .300+ AVG, or ace SP. Don't reach."),
-            2:("Top-10 talent","Best player available. If you didn't get SB in R1, address it now."),
-            3:("SB or SP ace","SB dries up fast. If no speed yet, round 3 is your last cheap window."),
-            4:("SP or power bat","Start your SP core. Target xFIP < 3.20 starters over name-brand ERA."),
-            5:("Upside SP","Second SP or breakout hitter. Breakout Score > 44 is your filter."),
-            6:("Category fill","Identify your weakest projected category and target specifically."),
-            7:("Closer or depth","Saves/Holds if your league counts them. Otherwise best available."),
-            8:("Depth + upside","Players with Breakout Score > 33 and low composite — buy low."),
-            9:("Bench depth","Multi-position eligibility is gold in Yahoo. Prioritize SP/SS/2B."),
-            10:("Lottery tickets","Young players with elite underlying metrics but low ADP — Barrel% > 12%."),
+            1:  ("Superstar anchor",     "Elite 1st-rounders: 50+ HR pace, .300+ AVG, or generational SP. Don't reach."),
+            2:  ("Top-10 talent",        "Best player available. If you didn't get SB in R1, address it now."),
+            3:  ("SB or SP ace",         "SB dries up fast. If no speed yet, round 3 is your last cheap window."),
+            4:  ("SP or power bat",      "Start your SP core. Target xFIP < 3.20 starters over ERA name-brands."),
+            5:  ("Upside SP",            "Second SP or breakout hitter. Breakout Score > 44 is your filter."),
+            6:  ("Category fill",        "Identify your weakest projected category and target specifically."),
+            7:  ("Closer or depth",      "Saves if your league counts them. Otherwise best available."),
+            8:  ("Depth + upside",       "Players with high Breakout Score and low composite — buy low."),
+            9:  ("Bench depth",          "Multi-position eligibility is gold in Yahoo. Prioritize SP/SS/2B."),
+            10: ("Lottery tickets",      "Young players with elite underlying metrics but low ADP — Barrel% > 12%."),
         }
         for rd in range(1, min(total_rounds+1, 11)):
-            pick_no = pick_numbers[rd-1] if rd-1 < len(pick_numbers) else "—"
+            pick_no   = pick_numbers[rd-1] if rd-1 < len(pick_numbers) else "—"
             label, advice = round_advice.get(rd, (f"Round {rd}", "Best player available."))
             with st.expander(f"**Round {rd}** — Pick ~{pick_no}  |  {label}"):
                 st.write(advice)
                 if rd <= 5:
                     lo, hi = (rd-1)*league_size, rd*league_size
-                    sug_h = bat_rec[(bat_rec["rank"]>=lo)&(bat_rec["rank"]<=hi)].head(4)
-                    sug_p = pit_rec[(pit_rec["rank"]>=lo)&(pit_rec["rank"]<=hi)].head(3)
+                    sug_h  = bat_rec[(bat_rec["rank"]>=lo)&(bat_rec["rank"]<=hi)].head(4)
+                    sug_p  = pit_rec[(pit_rec["rank"]>=lo)&(pit_rec["rank"]<=hi)].head(3)
                     if not sug_h.empty:
                         st.markdown("**Hitter targets:**")
                         h_c = [c for c in ["Name","Team","composite","HR","AVG","xwOBA"] if c in sug_h.columns]
-                        st.dataframe(sug_h[h_c], use_container_width=True, hide_index=True)
+                        # Enrich with ADP if loaded
+                        sug_h = sug_h[h_c].copy()
+                        sug_h["ADP"] = sug_h["Name"].apply(lambda n: _adp_label(_get_adp(n).get("adp",999)))
+                        st.dataframe(sug_h, use_container_width=True, hide_index=True)
                     if not sug_p.empty:
                         st.markdown("**Pitcher targets:**")
                         p_c = [c for c in ["Name","Team","composite","W","SV","ERA","xFIP","K%"] if c in sug_p.columns]
-                        st.dataframe(sug_p[p_c], use_container_width=True, hide_index=True)
-        st.markdown("---"); st.markdown("#### 🔍 Category Gap Finder")
+                        sug_p = sug_p[p_c].copy()
+                        sug_p["ADP"] = sug_p["Name"].apply(lambda n: _adp_label(_get_adp(n).get("adp",999)))
+                        st.dataframe(sug_p, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+        st.markdown("#### 🔍 Category Gap Finder")
         if st.session_state.targets:
-            my_h_df = bat_rec[bat_rec["Name"].isin([t["name"] for t in st.session_state.targets if t["type"]=="Hitter"])]
-            my_p_df = pit_rec[pit_rec["Name"].isin([t["name"] for t in st.session_state.targets if t["type"]=="Pitcher"])]
+            my_h_df = bat_rec[bat_rec["Name"].isin(
+                [t["name"] for t in st.session_state.targets if t["type"]=="Hitter"])]
+            my_p_df = pit_rec[pit_rec["Name"].isin(
+                [t["name"] for t in st.session_state.targets if t["type"]=="Pitcher"])]
             gap_rows = []
-            for cat, (src, col) in {"HR":(bat_rec,"z_HR"),"R":(bat_rec,"z_R"),"RBI":(bat_rec,"z_RBI"),
+            for cat, (src_df2, col) in {
+                "HR":(bat_rec,"z_HR"),"R":(bat_rec,"z_R"),"RBI":(bat_rec,"z_RBI"),
                 "SB":(bat_rec,"z_SB"),"AVG":(bat_rec,"z_AVG"),"W":(pit_rec,"z_W"),
-                "SV":(pit_rec,"z_SV"),"ERA":(pit_rec,"z_ERA"),"WHIP":(pit_rec,"z_WHIP"),"K":(pit_rec,"z_K")}.items():
+                "SV":(pit_rec,"z_SV"),"ERA":(pit_rec,"z_ERA"),
+                "WHIP":(pit_rec,"z_WHIP"),"K":(pit_rec,"z_K")
+            }.items():
                 chunk = my_h_df if cat in ["HR","R","RBI","SB","AVG"] else my_p_df
-                if col in chunk.columns and len(chunk)>0:
+                if col in chunk.columns and len(chunk) > 0:
                     avg_z = chunk[col].mean()
-                    gap_rows.append({"Category":cat,"Your Avg Z":round(avg_z,2),
-                        "Status":"✅ Strong" if avg_z>0.5 else "⚠️ Weak" if avg_z<-0.2 else "➡️ Average"})
-            if gap_rows: st.dataframe(pd.DataFrame(gap_rows), use_container_width=True, hide_index=True)
+                    gap_rows.append({
+                        "Category": cat,
+                        "Your Avg Z": round(avg_z, 2),
+                        "Status": ("✅ Strong" if avg_z > 0.5 else
+                                   "⚠️ Weak"   if avg_z < -0.2 else "➡️ Average")
+                    })
+            if gap_rows:
+                st.dataframe(pd.DataFrame(gap_rows),
+                             use_container_width=True, hide_index=True)
         else:
             st.info("Add players to your target list to see category gaps.")
 
+    # ══════════════════════════════════════════════════════════
+    #  TAB 3 — MY TARGET LIST
+    # ══════════════════════════════════════════════════════════
     with tab_targets:
         st.markdown("### ⭐ My Target List")
         with st.expander("➕ Add a player manually"):
             col_a, col_b, col_c = st.columns(3)
-            add_type = col_a.radio("Type", ["Hitter","Pitcher"], horizontal=True, key="manual_type")
-            all_names_manual = sorted((bat_rec if add_type=="Hitter" else pit_rec)["Name"].dropna().unique().tolist())
+            add_type = col_a.radio("Type", ["Hitter","Pitcher"], horizontal=True,
+                                   key="manual_type", label_visibility="collapsed")
+            all_names_manual = sorted(
+                (bat_rec if add_type=="Hitter" else pit_rec)["Name"].dropna().unique().tolist())
             add_name = col_b.selectbox("Player", all_names_manual, key="manual_name")
-            add_note = col_c.text_input("Note", placeholder="e.g. 'Value in round 8'", key="manual_note")
+            add_note = col_c.text_input("Note", placeholder="e.g. 'Value in round 8'",
+                                        key="manual_note")
             if st.button("Add to Target List", key="manual_add"):
                 rec_src = bat_rec if add_type=="Hitter" else pit_rec
                 rec_row = rec_src[rec_src["Name"]==add_name]
-                entry = {"name":add_name,"type":add_type,
-                    "tag":"—",
-                    "composite":float(rec_row.iloc[0].get("composite",0)) if not rec_row.empty else 0,
-                    "note":add_note}
+                entry   = {"name": add_name, "type": add_type, "tag": "—",
+                           "composite": float(rec_row.iloc[0].get("composite",0)) if not rec_row.empty else 0,
+                           "note": add_note}
                 if not any(t["name"]==add_name for t in st.session_state.targets):
-                    st.session_state.targets.append(entry); st.success(f"✅ Added {add_name}!"); st.rerun()
+                    st.session_state.targets.append(entry)
+                    st.success(f"✅ Added {add_name}!")
+                    st.rerun()
                 else:
                     st.info(f"{add_name} already in list.")
+
         st.markdown("---")
         if not st.session_state.targets:
-            st.info("Your target list is empty. Add players from the Draft Board, Deep Dive, or Regression pages.")
+            st.info("Your target list is empty. Add players from the Draft Board, Deep Dive, or this page.")
         else:
-            sort_opt = st.selectbox("Sort targets by", ["composite","name","type"], key="target_sort")
-            sorted_targets = sorted(st.session_state.targets, key=lambda x:(
-                -x["composite"] if sort_opt=="composite" else x["name"] if sort_opt=="name" else x["type"]))
+            sc1, sc2 = st.columns(2)
+            sort_opt = sc1.selectbox("Sort by",
+                ["Composite Z","ADP (earliest first)","ADP Value Gap","Name","Type"],
+                key="target_sort")
+
+            # Enrich with ADP
+            def _sort_key(t):
+                adp_d = _get_adp(t["name"])
+                adp   = adp_d.get("adp", 999)
+                z_rank = int(bat_rec["composite"].rank(ascending=False).get(
+                    bat_rec[bat_rec["Name"]==t["name"]].index[0]
+                    if t["type"]=="Hitter" else -1, 999))
+                gap = adp - z_rank if adp < 999 else -999
+                if sort_opt == "Composite Z":         return -t["composite"]
+                elif sort_opt == "ADP (earliest first)": return adp
+                elif sort_opt == "ADP Value Gap":     return -gap
+                elif sort_opt == "Name":              return t["name"]
+                else:                                 return t["type"]
+
+            sorted_targets = sorted(st.session_state.targets, key=_sort_key)
             to_remove = []
+
             for i, t in enumerate(sorted_targets):
                 rec_src = bat_rec if t["type"]=="Hitter" else pit_rec
                 rec_row = rec_src[rec_src["Name"]==t["name"]]
-                st.markdown(f"""<div class='target-card'><b>{t['name']}</b> &nbsp;
+                adp_d   = _get_adp(t["name"])
+                adp     = adp_d.get("adp", 999)
+                adp_rnd = adp_d.get("adp_rnd", 99)
+                pct_own = adp_d.get("pct_own", 0)
+
+                # Value gap
+                z_rank = int(rec_src["composite"].rank(ascending=False).get(
+                    rec_row.index[0] if not rec_row.empty else -1, 999))
+                gap = adp - z_rank if adp < 999 else None
+                if gap is None:      vtag = "❓ No ADP"
+                elif gap >= 25:      vtag = "🔥 Big Value"
+                elif gap >= 12:      vtag = "✅ Value"
+                elif gap >= -8:      vtag = "➡️ Fair"
+                elif gap >= -20:     vtag = "⚠️ Reach"
+                else:                vtag = "🚨 Big Reach"
+
+                adp_str = (f"ADP **{adp:.1f}** (Rnd {adp_rnd:.0f}) · {pct_own*100:.0f}% owned · {vtag}"
+                           if adp < 999 else f"No ADP data · {vtag}")
+
+                st.markdown(f"""<div class='target-card'>
+                    <b>{t['name']}</b> &nbsp;
                     <span style='color:#aaa'>{t['type']}</span> &nbsp;|&nbsp; {t['tag']}
-                    &nbsp;|&nbsp; Composite: <b>{t['composite']:.2f}</b>
+                    &nbsp;|&nbsp; Z: <b>{t['composite']:.2f}</b> (Rank #{z_rank})
                     {"&nbsp;|&nbsp; 📝 " + t['note'] if t['note'] else ""}
+                    <br><small style='color:#888'>{adp_str}</small>
                     </div>""", unsafe_allow_html=True)
+
                 if not rec_row.empty:
                     r = rec_row.iloc[0]
                     mini = ([c for c in ["HR","AVG","xwOBA","Barrel%","SB","wRC+"] if c in r.index]
                             if t["type"]=="Hitter" else
                             [c for c in ["ERA","xFIP","K%","SwStr%","WHIP"] if c in r.index])
-                    mcols = st.columns(len(mini))
+                    mcols = st.columns(len(mini) + 1)
                     for ci, s in enumerate(mini):
                         v = r.get(s, np.nan)
                         if pd.notna(v):
-                            mcols[ci].metric(s, f"{float(v):.3f}" if isinstance(v,float) and v<10 else str(int(round(float(v)))))
-                if st.button("🗑️ Remove", key=f"rem_{i}_{t['name']}"): to_remove.append(t["name"])
-            for nm in to_remove: st.session_state.targets = [t for t in st.session_state.targets if t["name"]!=nm]
-            if to_remove: st.rerun()
-            st.markdown("---")
-            if st.button("🗑️ Clear Entire Target List"): st.session_state.targets = []; st.rerun()
+                            mcols[ci].metric(s,
+                                f"{float(v):.3f}" if isinstance(v,float) and v < 10
+                                else str(int(round(float(v)))))
+                    # Add to MC sim button inline
+                    if mcols[-1].button("➕ MC Sim", key=f"mc_{i}_{t['name']}",
+                                        help="Add to Monte Carlo Sim"):
+                        key = "mc_hitters" if t["type"]=="Hitter" else "mc_pitchers"
+                        if key not in st.session_state:
+                            st.session_state[key] = []
+                        if t["name"] not in st.session_state[key]:
+                            st.session_state[key].append(t["name"])
+                            st.toast(f"Added {t['name']} to MC Sim")
 
+                if st.button("🗑️ Remove", key=f"rem_{i}_{t['name']}"):
+                    to_remove.append(t["name"])
+
+            for nm in to_remove:
+                st.session_state.targets = [t for t in st.session_state.targets if t["name"]!=nm]
+            if to_remove:
+                st.rerun()
+
+            st.markdown("---")
+            # Summary stats
+            if len(st.session_state.targets) >= 3:
+                st.markdown("#### 📊 Target List Summary")
+                vals   = [t for t in st.session_state.targets if _get_adp(t["name"]).get("adp",999) < 999]
+                n_val  = sum(1 for t in vals if ((_get_adp(t["name"])["adp"]) -
+                             int(rec_src["composite"].rank(ascending=False).get(
+                                 rec_src[rec_src["Name"]==t["name"]].index[0]
+                                 if not rec_src[rec_src["Name"]==t["name"]].empty else -1, 999))) >= 12)
+                sc_a, sc_b, sc_c = st.columns(3)
+                sc_a.metric("Total targets",   len(st.session_state.targets))
+                sc_b.metric("Value picks",     n_val)
+                sc_c.metric("Avg Z-Score",
+                    round(np.mean([t["composite"] for t in st.session_state.targets]),2))
+
+            if st.button("🗑️ Clear Entire Target List"):
+                st.session_state.targets = []
+                st.rerun()
+
+    # ══════════════════════════════════════════════════════════
+    #  TAB 4 — COMPARE TARGETS
+    # ══════════════════════════════════════════════════════════
     with tab_compare:
         st.markdown("### 📊 Compare Your Targets")
         if len(st.session_state.targets) < 2:
@@ -1701,22 +2078,369 @@ elif page == "🎯 Strategy & Target List":
             p_targets = [t for t in st.session_state.targets if t["type"]=="Pitcher"]
             if h_targets:
                 st.markdown("#### Hitter Comparison")
-                h_df = bat_rec[bat_rec["Name"].isin([t["name"] for t in h_targets])]
-                cc = [c for c in ["Name","Team","composite","HR","R","RBI","SB","AVG","wRC+","xwOBA","xBA","Barrel%","SwStr%"] if c in h_df.columns]
-                st.dataframe(h_df[cc].sort_values("composite",ascending=False).style.background_gradient(subset=["composite"],cmap="RdYlGn"), use_container_width=True, hide_index=True)
+                h_df = bat_rec[bat_rec["Name"].isin([t["name"] for t in h_targets])].copy()
+                h_df["ADP"] = h_df["Name"].apply(lambda n: _adp_label(_get_adp(n).get("adp",999)))
+                cc = [c for c in ["Name","Team","ADP","composite","HR","R","RBI","SB","AVG","wRC+","xwOBA","xBA","Barrel%"] if c in h_df.columns]
+                st.dataframe(h_df[cc].sort_values("composite",ascending=False)
+                    .style.background_gradient(subset=["composite"],cmap="RdYlGn"),
+                    use_container_width=True, hide_index=True)
                 z_h = [c for c in ["z_HR","z_R","z_RBI","z_SB","z_AVG"] if c in h_df.columns]
                 if z_h:
-                    fig_comp = go.Figure(); labels = [c.replace("z_","") for c in z_h]; colors = px.colors.qualitative.Plotly
+                    fig_comp = go.Figure()
+                    labels   = [c.replace("z_","") for c in z_h]
+                    colors   = px.colors.qualitative.Plotly
                     for ci, (_, row) in enumerate(h_df.iterrows()):
                         vals = [max(-3,min(3,float(row.get(c,0)))) for c in z_h]
-                        fig_comp.add_trace(go.Scatterpolar(r=vals+[vals[0]], theta=labels+[labels[0]], fill="toself", name=row["Name"], line_color=colors[ci%len(colors)]))
-                    fig_comp.update_layout(polar=dict(radialaxis=dict(range=[-3,3])), template="plotly_dark", height=400, legend=dict(orientation="h",y=-0.1))
+                        fig_comp.add_trace(go.Scatterpolar(
+                            r=vals+[vals[0]], theta=labels+[labels[0]],
+                            fill="toself", name=row["Name"],
+                            line_color=colors[ci%len(colors)]))
+                    fig_comp.update_layout(
+                        polar=dict(radialaxis=dict(range=[-3,3])),
+                        template="plotly_dark", height=400,
+                        legend=dict(orientation="h",y=-0.1))
                     st.plotly_chart(fig_comp, use_container_width=True)
             if p_targets:
                 st.markdown("#### Pitcher Comparison")
-                p_df = pit_rec[pit_rec["Name"].isin([t["name"] for t in p_targets])]
-                cc = [c for c in ["Name","Team","composite","W","SV","ERA","WHIP","SO","xFIP","SIERA","K%","SwStr%","LOB%"] if c in p_df.columns]
-                st.dataframe(p_df[cc].sort_values("composite",ascending=False).style.background_gradient(subset=["composite"],cmap="RdYlGn"), use_container_width=True, hide_index=True)
+                p_df = pit_rec[pit_rec["Name"].isin([t["name"] for t in p_targets])].copy()
+                p_df["ADP"] = p_df["Name"].apply(lambda n: _adp_label(_get_adp(n).get("adp",999)))
+                cc = [c for c in ["Name","Team","ADP","composite","W","SV","ERA","WHIP","SO","xFIP","SIERA","K%","SwStr%"] if c in p_df.columns]
+                st.dataframe(p_df[cc].sort_values("composite",ascending=False)
+                    .style.background_gradient(subset=["composite"],cmap="RdYlGn"),
+                    use_container_width=True, hide_index=True)
+
+
+    # ══════════════════════════════════════════════════════════
+    #  TAB 5 — DRAFT GRADE
+    # ══════════════════════════════════════════════════════════
+    with tab_grade:
+        st.markdown("### 🎓 Post-Draft Grade")
+        st.caption(
+            "After your draft completes, connect Yahoo and load your roster to grade "
+            "every pick against ADP and our projections. See where you found value, "
+            "where you reached, and get an overall draft score."
+        )
+
+        if not yahoo_connected or not league_key_adp:
+            st.info("👆 Connect your Yahoo account on the **🏆 My Yahoo League** page first, "
+                    "then come back here to grade your draft.")
+            st.stop()
+
+        # Load roster for grading
+        my_team_key_grade = st.session_state.get("yahoo_my_team_key")
+        my_team_name_grade = st.session_state.get("yahoo_my_team_name","My Team")
+
+        if not my_team_key_grade:
+            st.warning("Could not find your team key. Visit **🏆 My Yahoo League → My Roster** first.")
+            st.stop()
+
+        if st.button("🔄 Load Draft Results & Grade", type="primary", key="btn_draft_grade"):
+            st.session_state.pop("draft_grade_data", None)
+
+        if "draft_grade_data" not in st.session_state:
+            with st.spinner("Fetching your drafted roster..."):
+                import requests as _rg
+                access_token_g = st.session_state["yahoo_token"]["access_token"]
+
+                # Fetch roster
+                roster_url = (f"https://fantasysports.yahooapis.com/fantasy/v2"
+                              f"/team/{my_team_key_grade}/roster/players?format=json")
+                r_resp = _rg.get(roster_url,
+                    headers={"Authorization": f"Bearer {access_token_g}",
+                             "Accept": "application/json"}, timeout=15)
+
+                # Fetch draft results for the league
+                draft_url = (f"https://fantasysports.yahooapis.com/fantasy/v2"
+                             f"/league/{league_key_adp}/draftresults?format=json")
+                d_resp = _rg.get(draft_url,
+                    headers={"Authorization": f"Bearer {access_token_g}",
+                             "Accept": "application/json"}, timeout=15)
+
+                st.session_state["draft_grade_data"] = {
+                    "roster": r_resp.json() if r_resp.status_code == 200 else {"error": f"HTTP {r_resp.status_code}"},
+                    "draft":  d_resp.json() if d_resp.status_code == 200 else {"error": f"HTTP {d_resp.status_code}"},
+                }
+
+        if "draft_grade_data" not in st.session_state:
+            st.info("Click **Load Draft Results & Grade** above to begin.")
+            st.stop()
+
+        grade_data   = st.session_state["draft_grade_data"]
+        roster_data  = grade_data["roster"]
+        draft_resp   = grade_data["draft"]
+
+        # ── Parse roster ──────────────────────────────────────
+        my_players = []
+        if "error" not in roster_data:
+            try:
+                entries = roster_data["fantasy_content"]["team"][1]["roster"]["0"]["players"]
+                for k, v in entries.items():
+                    if k == "count": continue
+                    p0   = v["player"][0]
+                    name = next((x["name"]["full"] for x in p0 if isinstance(x,dict) and "name" in x), None)
+                    pos  = next((x["display_position"] for x in p0 if isinstance(x,dict) and "display_position" in x), "")
+                    pkey = next((x["player_key"] for x in p0 if isinstance(x,dict) and "player_key" in x), "")
+                    if name:
+                        my_players.append({"name": name, "pos": pos, "player_key": pkey})
+            except Exception as e:
+                st.error(f"Could not parse roster: {e}")
+
+        # ── Parse draft results ────────────────────────────────
+        # Map player_key → pick number for my players
+        my_picks = {}
+        if "error" not in draft_resp:
+            try:
+                picks_raw = draft_resp["fantasy_content"]["league"][1]["draft_results"]["0"]["draft_results"]
+                for k, v in picks_raw.items():
+                    if k == "count": continue
+                    dr = v["draft_result"]
+                    team_key  = dr.get("team_key","")
+                    pick_num  = int(dr.get("pick", 0))
+                    round_num = int(dr.get("round", 0))
+                    pkey      = dr.get("player_key","")
+                    # Is this pick mine?
+                    if my_team_key_grade in team_key or team_key == my_team_key_grade:
+                        my_picks[pkey] = {"pick": pick_num, "round": round_num}
+            except Exception as e:
+                st.warning(f"Could not parse draft results: {e}. "
+                           "Draft may not have happened yet, or results aren't available via API.")
+
+        if not my_players:
+            st.warning("No roster found. Make sure your draft is complete.")
+            st.stop()
+
+        # ── Build grade table ──────────────────────────────────
+        LETTER_GRADES = {
+            (30, 999):  ("A+", "#21C354", "Steal of the draft"),
+            (15,  30):  ("A",  "#21C354", "Big value"),
+            (8,   15):  ("B+", "#7BC67E", "Good value"),
+            (0,    8):  ("B",  "#FFA500", "Solid pick, fair price"),
+            (-10,  0):  ("C",  "#FFA500", "Slight reach"),
+            (-25, -10): ("D",  "#FF4B4B", "Reach"),
+            (-999,-25): ("F",  "#FF4B4B", "Significant reach"),
+        }
+
+        def _letter(gap):
+            for (lo, hi), (grade, color, label) in LETTER_GRADES.items():
+                if lo <= gap < hi:
+                    return grade, color, label
+            return "C", "#FFA500", "Fair pick"
+
+        grade_rows = []
+        grade_scores = []
+
+        for p in my_players:
+            name   = p["name"]
+            pos    = p["pos"]
+            pkey   = p["player_key"]
+            is_hit = any(x in pos for x in ["1B","2B","3B","SS","OF","C","DH","Util"])
+            src_df_g = bat_rec if is_hit else pit_rec
+            rec    = src_df_g[src_df_g["Name"].str.lower() == name.lower()]
+
+            # Our rank
+            our_rank = int(src_df_g["composite"].rank(ascending=False)[rec.index[0]]
+                           ) if not rec.empty else 999
+            z_score  = float(rec.iloc[0].get("composite",0)) if not rec.empty else 0
+
+            # ADP from cache or pick from draft results
+            adp_d  = _get_adp(name)
+            adp    = adp_d.get("adp", 999)
+
+            # Actual pick number
+            pick_info = my_picks.get(pkey, {})
+            actual_pick = pick_info.get("pick", None)
+            actual_round = pick_info.get("round", None)
+
+            # Use actual pick if available, else ADP
+            compare_pick = actual_pick if actual_pick else adp
+            gap = round(compare_pick - our_rank, 1) if compare_pick and compare_pick < 999 else None
+
+            if gap is not None:
+                grade, color, label = _letter(gap)
+                grade_scores.append(gap)
+            else:
+                grade, color, label = "?", "#888", "No ADP data"
+
+            # Key stat
+            if not rec.empty:
+                r = rec.iloc[0]
+                key_stat = (f"HR:{int(r['HR'])} AVG:{r['AVG']:.3f}" if is_hit
+                            else f"ERA:{r['ERA']:.2f} K:{int(r['SO'])}")
+            else:
+                key_stat = ""
+
+            grade_rows.append({
+                "Round":       actual_round or ("~" + str(round(adp/12)) if adp < 999 else "?"),
+                "Pick":        actual_pick or ("~" + f"{adp:.0f}" if adp < 999 else "?"),
+                "Name":        name,
+                "Pos":         pos,
+                "Our Rank":    our_rank if our_rank < 999 else "?",
+                "ADP":         f"{adp:.1f}" if adp < 999 else "—",
+                "Gap":         (f"+{gap:.0f}" if gap and gap > 0 else f"{gap:.0f}") if gap else "—",
+                "Grade":       grade,
+                "Assessment":  label,
+                "Key Stats":   key_stat,
+                "Z-Score":     round(z_score, 2),
+            })
+
+        # Sort by round/pick
+        grade_rows.sort(key=lambda x: float(str(x["Pick"]).replace("~","").replace("?","999") or 999))
+
+        gdf = pd.DataFrame(grade_rows)
+
+        # ── Overall draft score ────────────────────────────────
+        if grade_scores:
+            avg_gap    = np.mean(grade_scores)
+            pct_value  = sum(1 for g in grade_scores if g >= 8) / len(grade_scores) * 100
+            pct_reach  = sum(1 for g in grade_scores if g < -10) / len(grade_scores) * 100
+
+            # Overall letter grade
+            if   avg_gap >= 15: overall, oc = "A",  "#21C354"
+            elif avg_gap >= 8:  overall, oc = "B+", "#7BC67E"
+            elif avg_gap >= 2:  overall, oc = "B",  "#FFA500"
+            elif avg_gap >= -5: overall, oc = "C+", "#FFA500"
+            elif avg_gap >= -12:overall, oc = "C",  "#FF8C00"
+            else:               overall, oc = "D",  "#FF4B4B"
+
+            st.markdown(
+                f"<h1 style='text-align:center;color:{oc};font-size:72px'>{overall}</h1>"
+                f"<p style='text-align:center;color:#aaa'>Overall Draft Grade for {my_team_name_grade}</p>",
+                unsafe_allow_html=True
+            )
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Avg Value Gap",    f"{avg_gap:+.1f} picks")
+            m2.metric("Value Picks",      f"{pct_value:.0f}%",
+                      help="% of picks where you got value vs ADP")
+            m3.metric("Reaches",          f"{pct_reach:.0f}%",
+                      help="% of picks where you reached 10+ spots")
+            m4.metric("Picks Graded",     len(grade_scores))
+
+            # Grade distribution bar chart
+            grade_counts = {}
+            for row in grade_rows:
+                g = row["Grade"]
+                grade_counts[g] = grade_counts.get(g, 0) + 1
+            grade_order = ["A+","A","B+","B","C","D","F","?"]
+            grade_colors_map = {
+                "A+":"#21C354","A":"#21C354","B+":"#7BC67E","B":"#FFA500",
+                "C":"#FFA500","D":"#FF4B4B","F":"#FF4B4B","?":"#888"
+            }
+            fig_grades = go.Figure(go.Bar(
+                x=[g for g in grade_order if g in grade_counts],
+                y=[grade_counts.get(g,0) for g in grade_order if g in grade_counts],
+                marker_color=[grade_colors_map.get(g,"#888") for g in grade_order if g in grade_counts],
+                text=[grade_counts.get(g,0) for g in grade_order if g in grade_counts],
+                textposition="outside"
+            ))
+            fig_grades.update_layout(
+                template="plotly_dark", height=220,
+                xaxis_title="Grade", yaxis_title="# of Picks",
+                margin=dict(t=10,b=40)
+            )
+            st.plotly_chart(fig_grades, use_container_width=True)
+
+        st.markdown("---")
+        st.markdown("#### 📋 Pick-by-Pick Breakdown")
+
+        def _grade_color(val):
+            return grade_colors_map.get(str(val), "")
+
+        def _gap_color_g(val):
+            try:
+                v = float(str(val).replace("+",""))
+                if v >= 15:  return "color:#21C354;font-weight:bold"
+                if v >= 8:   return "color:#21C354"
+                if v >= -10: return "color:#FFA500"
+                return "color:#FF4B4B"
+            except: return ""
+
+        st.dataframe(
+            gdf.style
+                .map(lambda v: f"color:{grade_colors_map.get(str(v),'#888')};font-weight:bold",
+                     subset=["Grade"])
+                .map(_gap_color_g, subset=["Gap"]),
+            use_container_width=True, hide_index=True, height=520
+        )
+
+        # ── Best and worst picks ──────────────────────────────
+        st.markdown("---")
+        bc1, bc2 = st.columns(2)
+        with bc1:
+            st.markdown("#### 🏆 Best Picks")
+            best = gdf[gdf["Grade"].isin(["A+","A","B+"])].head(5)
+            if not best.empty:
+                for _, row in best.iterrows():
+                    st.markdown(
+                        f"**Rd {row['Round']} Pick {row['Pick']} — {row['Name']}** "
+                        f"({row['Pos']}) · Grade **{row['Grade']}** · {row['Assessment']} "
+                        f"· Gap: {row['Gap']}"
+                    )
+            else:
+                st.info("No A/B+ picks found.")
+
+        with bc2:
+            st.markdown("#### ⚠️ Reaches to Watch")
+            worst = gdf[gdf["Grade"].isin(["D","F"])].head(5)
+            if not worst.empty:
+                for _, row in worst.iterrows():
+                    st.markdown(
+                        f"**Rd {row['Round']} Pick {row['Pick']} — {row['Name']}** "
+                        f"({row['Pos']}) · Grade **{row['Grade']}** · {row['Assessment']} "
+                        f"· Gap: {row['Gap']}"
+                    )
+            else:
+                st.success("No significant reaches — solid draft!")
+
+        # ── Category coverage from draft ──────────────────────
+        st.markdown("---")
+        st.markdown("#### 📊 Category Coverage from Your Draft")
+        st.caption("How well your drafted roster covers all 10 categories based on z-scores.")
+        drafted_h = [p["name"] for p in my_players
+                     if any(x in p["pos"] for x in ["1B","2B","3B","SS","OF","C","DH","Util"])]
+        drafted_p = [p["name"] for p in my_players
+                     if any(x in p["pos"] for x in ["SP","RP","P"])]
+        dh_df = bat_rec[bat_rec["Name"].isin(drafted_h)]
+        dp_df = pit_rec[pit_rec["Name"].isin(drafted_p)]
+        cat_cov = []
+        for cat, (df_c, zcol) in {
+            "HR":(dh_df,"z_HR"),"R":(dh_df,"z_R"),"RBI":(dh_df,"z_RBI"),
+            "SB":(dh_df,"z_SB"),"AVG":(dh_df,"z_AVG"),
+            "W":(dp_df,"z_W"),"SV":(dp_df,"z_SV"),"SO":(dp_df,"z_K"),
+            "ERA":(dp_df,"z_ERA"),"WHIP":(dp_df,"z_WHIP"),
+        }.items():
+            if zcol in df_c.columns and len(df_c) > 0:
+                avg_z = df_c[zcol].mean()
+                cat_cov.append({
+                    "Category": cat,
+                    "Avg Z": round(avg_z, 2),
+                    "Rating": ("💪 Elite"   if avg_z > 1.0 else
+                               "✅ Strong"  if avg_z > 0.3 else
+                               "➡️ Average" if avg_z > -0.3 else
+                               "⚠️ Weak"    if avg_z > -0.8 else
+                               "🚨 Punt"),
+                })
+
+        if cat_cov:
+            cov_df = pd.DataFrame(cat_cov)
+            fig_cov = go.Figure(go.Bar(
+                x=cov_df["Category"], y=cov_df["Avg Z"],
+                marker_color=["#21C354" if v>0.3 else "#FFA500" if v>-0.3 else "#FF4B4B"
+                              for v in cov_df["Avg Z"]],
+                text=[f"{v:+.2f}" for v in cov_df["Avg Z"]],
+                textposition="outside"
+            ))
+            fig_cov.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+            fig_cov.update_layout(
+                template="plotly_dark", height=270,
+                yaxis_title="Avg Z-Score", margin=dict(t=10,b=40)
+            )
+            st.plotly_chart(fig_cov, use_container_width=True)
+            st.dataframe(cov_df.style.map(
+                lambda v: ("color:#21C354" if "Elite" in str(v) or "Strong" in str(v)
+                           else "color:#FFA500" if "Average" in str(v)
+                           else "color:#FF4B4B"), subset=["Rating"]),
+                use_container_width=True, hide_index=True)
 
 
 # ═════════════════════════════════════════════════════════════
