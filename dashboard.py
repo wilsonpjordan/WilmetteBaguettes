@@ -1681,44 +1681,106 @@ elif page == "🎯 Strategy & Target List":
 
         # ── Load ADP from Yahoo if connected ──────────────────
         if yahoo_connected and league_key_adp:
-            if st.button("🔄 Load Yahoo ADP for top players", key="btn_load_adp"):
+            adp_loaded = len(st.session_state.get("adp_cache", {}))
+            col_btn, col_status = st.columns([2, 3])
+            with col_btn:
+                load_adp = st.button(
+                    f"🔄 {'Reload' if adp_loaded else 'Load'} Yahoo ADP",
+                    key="btn_load_adp",
+                    type="primary" if not adp_loaded else "secondary"
+                )
+            with col_status:
+                if adp_loaded:
+                    st.success(f"✅ ADP loaded for {adp_loaded} players — toggle Hitters/Pitchers to see values")
+                else:
+                    st.info("👆 Click to load Yahoo ADP for all players")
+
+            if load_adp:
                 access_token = st.session_state["yahoo_token"]["access_token"]
-                # Get player keys for top N players — need to fetch them first
-                with st.spinner("Fetching player keys + ADP from Yahoo..."):
-                    import requests as _r
-                    pos_param = "B" if adp_ptype == "Hitters" else "P"
-                    # Fetch top 200 players with their keys
-                    url = (f"https://fantasysports.yahooapis.com/fantasy/v2"
-                           f"/league/{league_key_adp}/players"
-                           f";position={pos_param};sort=AR;count=200?format=json")
-                    resp = _r.get(url,
-                        headers={"Authorization": f"Bearer {access_token}",
-                                 "Accept": "application/json"}, timeout=20)
-                    if resp.status_code == 200:
-                        raw = resp.json()
-                        pkeys = {}
+                import requests as _r
+
+                def _parse_adp_response(raw: dict) -> dict:
+                    """Parse players list response and extract draft_analysis."""
+                    result = {}
+                    try:
+                        items = raw["fantasy_content"]["league"][1]["players"]
+                        for k, v in items.items():
+                            if k == "count": continue
+                            player = v["player"]
+                            p0   = player[0]
+                            name = next((x["name"]["full"] for x in p0
+                                         if isinstance(x,dict) and "name" in x), None)
+                            # draft_analysis can be at index 1 or nested
+                            da = {}
+                            for block in player[1:]:
+                                if isinstance(block, dict):
+                                    if "draft_analysis" in block:
+                                        da = block["draft_analysis"]
+                                        break
+                                    # sometimes nested under player stats
+                                    for key in block:
+                                        if key == "draft_analysis":
+                                            da = block[key]
+                                            break
+                            if name:
+                                result[name] = {
+                                    "adp":     float(da.get("average_pick",  999) or 999),
+                                    "adp_rnd": float(da.get("average_round", 99)  or 99),
+                                    "pct_own": float(da.get("percent_drafted", 0)  or 0),
+                                }
+                    except Exception as e:
+                        st.warning(f"Parse error: {e}")
+                    return result
+
+                headers = {
+                    "Authorization": f"Bearer {access_token}",
+                    "Accept": "application/json"
+                }
+
+                progress = st.progress(0, text="Fetching ADP...")
+                total_loaded = 0
+
+                # Fetch hitters and pitchers in separate calls
+                # Use ;out=draft_analysis to explicitly request ADP data
+                # Fetch in batches of 25 (start=0,25,50...) up to 200 each
+                for pos_type, label in [("B", "hitters"), ("P", "pitchers")]:
+                    for start in range(0, 200, 25):
+                        url = (
+                            f"https://fantasysports.yahooapis.com/fantasy/v2"
+                            f"/league/{league_key_adp}/players"
+                            f";position={pos_type}"
+                            f";sort=AR"
+                            f";start={start}"
+                            f";count=25"
+                            f";out=draft_analysis"
+                            f"?format=json"
+                        )
                         try:
-                            items = raw["fantasy_content"]["league"][1]["players"]
-                            for k, v in items.items():
-                                if k == "count": continue
-                                p0   = v["player"][0]
-                                name = next((x["name"]["full"] for x in p0 if isinstance(x,dict) and "name" in x), None)
-                                pkey = next((x["player_key"] for x in p0 if isinstance(x,dict) and "player_key" in x), None)
-                                da   = {}
-                                if len(v["player"]) > 1:
-                                    da = v["player"][1].get("draft_analysis", {})
-                                if name:
-                                    st.session_state["adp_cache"][name] = {
-                                        "adp":     float(da.get("average_pick",  999) or 999),
-                                        "adp_rnd": float(da.get("average_round", 99)  or 99),
-                                        "pct_own": float(da.get("percent_drafted", 0)  or 0),
-                                    }
-                        except Exception as e:
-                            st.warning(f"Parse error: {e}")
-                        st.success(f"✅ Loaded ADP for {len(st.session_state['adp_cache'])} players")
-                        st.rerun()
-                    else:
-                        st.error(f"API error {resp.status_code}")
+                            resp = _r.get(url, headers=headers, timeout=20)
+                            if resp.status_code == 200:
+                                parsed = _parse_adp_response(resp.json())
+                                st.session_state["adp_cache"].update(parsed)
+                                total_loaded += len(parsed)
+                                if len(parsed) < 25:
+                                    break   # no more players
+                            else:
+                                break
+                        except Exception:
+                            break
+                        pct = min(1.0, (start + 25) / 400 + (0.5 if pos_type == "P" else 0))
+                        progress.progress(pct, text=f"Loading {label} ADP... ({total_loaded} players)")
+
+                progress.empty()
+
+                if total_loaded > 0:
+                    st.success(f"✅ Loaded ADP for {total_loaded} players")
+                    st.rerun()
+                else:
+                    st.error(
+                        "No ADP data returned. This usually means: "
+                        "your draft has not happened yet (ADP populates from actual/mock drafts), "
+                        "or the league game key needs updating."
+                    )
         elif not yahoo_connected:
             st.info("💡 Connect your Yahoo account (🏆 My Yahoo League page) to load live ADP from your league.")
 
