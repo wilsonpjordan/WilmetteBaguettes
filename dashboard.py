@@ -1796,7 +1796,6 @@ elif page == "🎯 Strategy & Target List":
             z_rank = int(src_df_dr["composite"].rank(ascending=False)[row.name])
             adp_d  = _get_adp(name)
             adp    = adp_d.get("adp", 999)
-            adp_rnd= adp_d.get("adp_rnd", 99)
             pct    = adp_d.get("pct_own", 0)
             gap    = round(adp - z_rank, 1) if adp < 999 else None
 
@@ -1818,8 +1817,7 @@ elif page == "🎯 Strategy & Target List":
                 "Name":     name,
                 "Our Rank": z_rank,
                 "ADP":      f"{adp:.1f}" if adp < 999 else "—",
-                "ADP Rnd":  f"{adp_rnd:.0f}" if adp < 999 else "—",
-                "Gap":      (f"+{gap:.0f}" if gap and gap > 0 else f"{gap:.0f}") if gap else "—",
+                                "Gap":      (f"+{gap:.0f}" if gap and gap > 0 else f"{gap:.0f}") if gap else "—",
                 "Value":    val_label,
                 "Z-Score":  round(z, 2),
                 "%Owned":   f"{pct*100:.0f}%" if pct else "—",
@@ -2164,55 +2162,57 @@ elif page == "🎯 Strategy & Target List":
                 rec_row = rec_src[rec_src["Name"]==t["name"]]
                 adp_d   = _get_adp(t["name"])
                 adp     = adp_d.get("adp", 999)
-                adp_rnd = adp_d.get("adp_rnd", 99)
                 pct_own = adp_d.get("pct_own", 0)
 
                 # Value gap
                 z_rank = int(rec_src["composite"].rank(ascending=False).get(
                     rec_row.index[0] if not rec_row.empty else -1, 999))
                 gap = adp - z_rank if adp < 999 else None
-                if gap is None:      vtag = "❓ No ADP"
-                elif gap >= 25:      vtag = "🔥 Big Value"
-                elif gap >= 12:      vtag = "✅ Value"
-                elif gap >= -8:      vtag = "➡️ Fair"
-                elif gap >= -20:     vtag = "⚠️ Reach"
-                else:                vtag = "🚨 Big Reach"
+                if gap is None:    vtag = "❓ No ADP"
+                elif gap >= 25:    vtag = "🔥 Big Value"
+                elif gap >= 12:    vtag = "✅ Value"
+                elif gap >= -8:    vtag = "➡️ Fair"
+                elif gap >= -20:   vtag = "⚠️ Reach"
+                else:              vtag = "🚨 Big Reach"
 
-                adp_str = (f"ADP **{adp:.1f}** (Rnd {adp_rnd:.0f}) · {pct_own*100:.0f}% owned · {vtag}"
-                           if adp < 999 else f"No ADP data · {vtag}")
+                gap_str = (f"+{gap:.0f}" if gap and gap > 0 else f"{gap:.0f}") if gap else "—"
+                adp_display = f"ADP {adp:.1f}" if adp < 999 else "No ADP"
+                owned_str   = f"{pct_own*100:.0f}% owned" if pct_own else ""
 
-                st.markdown(f"""<div class='target-card'>
-                    <b>{t['name']}</b> &nbsp;
-                    <span style='color:#aaa'>{t['type']}</span> &nbsp;|&nbsp; {t['tag']}
-                    &nbsp;|&nbsp; Z: <b>{t['composite']:.2f}</b> (Rank #{z_rank})
-                    {"&nbsp;|&nbsp; 📝 " + t['note'] if t['note'] else ""}
-                    <br><small style='color:#888'>{adp_str}</small>
-                    </div>""", unsafe_allow_html=True)
-
-                if not rec_row.empty:
-                    r = rec_row.iloc[0]
-                    mini = ([c for c in ["HR","AVG","xwOBA","Barrel%","SB","wRC+"] if c in r.index]
-                            if t["type"]=="Hitter" else
-                            [c for c in ["ERA","xFIP","K%","SwStr%","WHIP"] if c in r.index])
-                    mcols = st.columns(len(mini) + 1)
-                    for ci, s in enumerate(mini):
-                        v = r.get(s, np.nan)
-                        if pd.notna(v):
-                            mcols[ci].metric(s,
-                                f"{float(v):.3f}" if isinstance(v,float) and v < 10
-                                else str(int(round(float(v)))))
-                    # Add to MC sim button inline
-                    if mcols[-1].button("➕ MC Sim", key=f"mc_{i}_{t['name']}",
-                                        help="Add to Monte Carlo Sim"):
-                        key = "mc_hitters" if t["type"]=="Hitter" else "mc_pitchers"
-                        if key not in st.session_state:
-                            st.session_state[key] = []
-                        if t["name"] not in st.session_state[key]:
-                            st.session_state[key].append(t["name"])
+                with st.container(border=True):
+                    h1, h2 = st.columns([4,1])
+                    h1.markdown(
+                        f"**{t['name']}** &nbsp; `{t['type']}` &nbsp; "
+                        f"Z: **{t['composite']:.2f}** (Rank #{z_rank})"
+                        + (f"  |  📝 {t['note']}" if t['note'] else "")
+                    )
+                    h1.caption(
+                        f"{adp_display}  ·  Gap: {gap_str}  ·  {vtag}"
+                        + (f"  ·  {owned_str}" if owned_str else "")
+                    )
+                    if not rec_row.empty:
+                        r = rec_row.iloc[0]
+                        mini = ([c for c in ["HR","R","RBI","SB","AVG","wRC+","xwOBA","Barrel%"] if c in r.index]
+                                if t["type"]=="Hitter" else
+                                [c for c in ["W","SV","SO","ERA","WHIP","xFIP","K%","SwStr%"] if c in r.index])
+                        mcols = st.columns(len(mini))
+                        for ci, s in enumerate(mini):
+                            v = r.get(s, np.nan)
+                            if pd.notna(v):
+                                mcols[ci].metric(s,
+                                    f"{float(v):.3f}" if isinstance(v,float) and v < 10
+                                    else str(int(round(float(v)))))
+                    btn_c1, btn_c2, btn_c3 = h2.columns(3) if False else (h2, h2, h2)
+                    b1, b2 = h2.columns(2)
+                    if b1.button("➕ MC", key=f"mc_{i}_{t['name']}", help="Add to MC Sim"):
+                        mc_key = "mc_hitters" if t["type"]=="Hitter" else "mc_pitchers"
+                        if mc_key not in st.session_state:
+                            st.session_state[mc_key] = []
+                        if t["name"] not in st.session_state[mc_key]:
+                            st.session_state[mc_key].append(t["name"])
                             st.toast(f"Added {t['name']} to MC Sim")
-
-                if st.button("🗑️ Remove", key=f"rem_{i}_{t['name']}"):
-                    to_remove.append(t["name"])
+                    if b2.button("🗑️", key=f"rem_{i}_{t['name']}", help="Remove"):
+                        to_remove.append(t["name"])
 
             for nm in to_remove:
                 st.session_state.targets = [t for t in st.session_state.targets if t["name"]!=nm]
@@ -2248,19 +2248,52 @@ elif page == "🎯 Strategy & Target List":
         else:
             h_targets = [t for t in st.session_state.targets if t["type"]=="Hitter"]
             p_targets = [t for t in st.session_state.targets if t["type"]=="Pitcher"]
+
+            def _mc_proj_for(names, is_hitter):
+                """Run quick MC sim for each player and return median projections."""
+                proj = {}
+                for name in names:
+                    try:
+                        df, _ = mc_run_simulation(
+                            (name,), (), 500,
+                            0.10, 0.20, 0.05, 0.5,
+                            run_count=abs(hash(name)) % 100000
+                        ) if is_hitter else mc_run_simulation(
+                            (), (name,), 500,
+                            0.10, 0.20, 0.05, 0.5,
+                            run_count=abs(hash(name)) % 100000
+                        )
+                        proj[name] = {c: round(float(df[c].median()), 2)
+                                      for c in df.columns if c != "Name"}
+                    except Exception:
+                        proj[name] = {}
+                return proj
+
             if h_targets:
-                st.markdown("#### Hitter Comparison")
-                h_df = bat_rec[bat_rec["Name"].isin([t["name"] for t in h_targets])].copy()
-                h_df["ADP"] = h_df["Name"].apply(lambda n: _adp_label(_get_adp(n).get("adp",999)))
-                cc = [c for c in ["Name","Team","ADP","composite","HR","R","RBI","SB","AVG","wRC+","xwOBA","xBA","Barrel%"] if c in h_df.columns]
-                st.dataframe(h_df[cc].sort_values("composite",ascending=False)
-                    .style.background_gradient(subset=["composite"],cmap="RdYlGn"),
+                st.markdown("#### ⚾ Hitter Comparison")
+                h_names = [t["name"] for t in h_targets]
+                h_df = bat_rec[bat_rec["Name"].isin(h_names)].copy()
+                h_df["ADP"] = h_df["Name"].apply(
+                    lambda n: _adp_label(_get_adp(n).get("adp",999)))
+
+                # Stats table
+                cc = [c for c in ["Name","Team","ADP","composite","HR","R","RBI",
+                                   "SB","AVG","wRC+","xwOBA","xBA","Barrel%","SwStr%"]
+                      if c in h_df.columns]
+                st.dataframe(
+                    h_df[cc].sort_values("composite", ascending=False)
+                        .style.background_gradient(subset=["composite"], cmap="RdYlGn")
+                        .format({"composite":"{:.2f}","AVG":"{:.3f}",
+                                 "xwOBA":"{:.3f}","xBA":"{:.3f}","Barrel%":"{:.3f}",
+                                 "SwStr%":"{:.3f}"}),
                     use_container_width=True, hide_index=True)
+
+                # Radar chart
                 z_h = [c for c in ["z_HR","z_R","z_RBI","z_SB","z_AVG"] if c in h_df.columns]
                 if z_h:
                     fig_comp = go.Figure()
-                    labels   = [c.replace("z_","") for c in z_h]
-                    colors   = px.colors.qualitative.Plotly
+                    labels = [c.replace("z_","") for c in z_h]
+                    colors = px.colors.qualitative.Plotly
                     for ci, (_, row) in enumerate(h_df.iterrows()):
                         vals = [max(-3,min(3,float(row.get(c,0)))) for c in z_h]
                         fig_comp.add_trace(go.Scatterpolar(
@@ -2269,17 +2302,82 @@ elif page == "🎯 Strategy & Target List":
                             line_color=colors[ci%len(colors)]))
                     fig_comp.update_layout(
                         polar=dict(radialaxis=dict(range=[-3,3])),
-                        template="plotly_dark", height=400,
-                        legend=dict(orientation="h",y=-0.1))
+                        template="plotly_dark", height=380,
+                        legend=dict(orientation="h", y=-0.15))
                     st.plotly_chart(fig_comp, use_container_width=True)
+
+                # MC projections
+                st.markdown("**🎲 Monte Carlo Season Projections (Median)**")
+                st.caption("Individual player MC sims — 500 seasons each.")
+                if st.button("Run MC Projections for Hitters", key="btn_mc_compare_h"):
+                    with st.spinner("Running MC sims..."):
+                        mc_projs = _mc_proj_for(h_names, True)
+                    mc_rows = []
+                    for name in h_names:
+                        p = mc_projs.get(name, {})
+                        mc_rows.append({
+                            "Name":  name,
+                            "HR":    p.get("HR","—"),
+                            "R":     p.get("R","—"),
+                            "RBI":   p.get("RBI","—"),
+                            "SB":    p.get("SB","—"),
+                            "AVG":   round(p["AVG"],3) if "AVG" in p else "—",
+                        })
+                    st.dataframe(pd.DataFrame(mc_rows), use_container_width=True, hide_index=True)
+
             if p_targets:
-                st.markdown("#### Pitcher Comparison")
-                p_df = pit_rec[pit_rec["Name"].isin([t["name"] for t in p_targets])].copy()
-                p_df["ADP"] = p_df["Name"].apply(lambda n: _adp_label(_get_adp(n).get("adp",999)))
-                cc = [c for c in ["Name","Team","ADP","composite","W","SV","ERA","WHIP","SO","xFIP","SIERA","K%","SwStr%"] if c in p_df.columns]
-                st.dataframe(p_df[cc].sort_values("composite",ascending=False)
-                    .style.background_gradient(subset=["composite"],cmap="RdYlGn"),
+                st.markdown("#### 🎯 Pitcher Comparison")
+                p_names = [t["name"] for t in p_targets]
+                p_df = pit_rec[pit_rec["Name"].isin(p_names)].copy()
+                p_df["ADP"] = p_df["Name"].apply(
+                    lambda n: _adp_label(_get_adp(n).get("adp",999)))
+
+                cc = [c for c in ["Name","Team","ADP","composite","W","SV","ERA",
+                                   "WHIP","SO","xFIP","SIERA","K%","SwStr%","GB%"]
+                      if c in p_df.columns]
+                st.dataframe(
+                    p_df[cc].sort_values("composite", ascending=False)
+                        .style.background_gradient(subset=["composite"], cmap="RdYlGn")
+                        .format({"composite":"{:.2f}","ERA":"{:.2f}","WHIP":"{:.3f}",
+                                 "xFIP":"{:.2f}","K%":"{:.3f}","SwStr%":"{:.3f}",
+                                 "GB%":"{:.3f}"}),
                     use_container_width=True, hide_index=True)
+
+                # Radar chart
+                z_p = [c for c in ["z_W","z_SV","z_ERA","z_WHIP","z_K"] if c in p_df.columns]
+                if z_p:
+                    fig_p = go.Figure()
+                    labels_p = [c.replace("z_","") for c in z_p]
+                    colors = px.colors.qualitative.Plotly
+                    for ci, (_, row) in enumerate(p_df.iterrows()):
+                        vals = [max(-3,min(3,float(row.get(c,0)))) for c in z_p]
+                        fig_p.add_trace(go.Scatterpolar(
+                            r=vals+[vals[0]], theta=labels_p+[labels_p[0]],
+                            fill="toself", name=row["Name"],
+                            line_color=colors[ci%len(colors)]))
+                    fig_p.update_layout(
+                        polar=dict(radialaxis=dict(range=[-3,3])),
+                        template="plotly_dark", height=380,
+                        legend=dict(orientation="h", y=-0.15))
+                    st.plotly_chart(fig_p, use_container_width=True)
+
+                # MC projections
+                st.markdown("**🎲 Monte Carlo Season Projections (Median)**")
+                if st.button("Run MC Projections for Pitchers", key="btn_mc_compare_p"):
+                    with st.spinner("Running MC sims..."):
+                        mc_projs_p = _mc_proj_for(p_names, False)
+                    mc_rows_p = []
+                    for name in p_names:
+                        p2 = mc_projs_p.get(name, {})
+                        mc_rows_p.append({
+                            "Name":  name,
+                            "W":     p2.get("W","—"),
+                            "SV":    p2.get("SV","—"),
+                            "SO":    p2.get("SO","—"),
+                            "ERA":   round(p2["ERA"],2)  if "ERA"  in p2 else "—",
+                            "WHIP":  round(p2["WHIP"],3) if "WHIP" in p2 else "—",
+                        })
+                    st.dataframe(pd.DataFrame(mc_rows_p), use_container_width=True, hide_index=True)
 
 
     # ══════════════════════════════════════════════════════════
