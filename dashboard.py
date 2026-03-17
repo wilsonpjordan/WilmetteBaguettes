@@ -949,7 +949,7 @@ if page == "📋 Draft Board":
         .background_gradient(subset=["composite"], cmap="RdYlGn")
         .format({c: "{:.2f}" for c in ["composite"] + z_present})
     )
-    st.dataframe(styled, use_container_width=True, height=560)
+    st.dataframe(styled, width="stretch", height=560)
     m1, m2, m3 = st.columns(3)
     m1.metric("Players",       len(df))
     m2.metric("Avg composite", f"{df['composite'].mean():.2f}")
@@ -1680,8 +1680,16 @@ elif page == "🎯 Strategy & Target List":
         src_df = bat_rec.copy() if adp_ptype == "Hitters" else pit_rec.copy()
 
         # ── Load ADP from Yahoo if connected ──────────────────
-        if yahoo_connected and league_key_adp:
-            adp_loaded = len(st.session_state.get("adp_cache", {}))
+        adp_loaded = len(st.session_state.get("adp_cache", {}))
+
+        st.markdown("**Yahoo ADP Status**")
+        if not yahoo_connected:
+            st.warning("⚠️ Not connected to Yahoo. Go to **🏆 My Yahoo League** and click Connect, then come back here.")
+            load_adp = False
+        elif not league_key_adp:
+            st.warning("⚠️ Connected but no league selected yet. Go to **🏆 My Yahoo League**, select your league, then come back.")
+            load_adp = False
+        else:
             col_btn, col_status = st.columns([2, 3])
             with col_btn:
                 load_adp = st.button(
@@ -1691,11 +1699,11 @@ elif page == "🎯 Strategy & Target List":
                 )
             with col_status:
                 if adp_loaded:
-                    st.success(f"✅ ADP loaded for {adp_loaded} players — toggle Hitters/Pitchers to see values")
+                    st.success(f"✅ ADP loaded for {adp_loaded} players")
                 else:
-                    st.info("👆 Click to load Yahoo ADP for all players")
+                    st.info("👆 Click to pull live ADP from your Yahoo league")
 
-            if load_adp:
+        if yahoo_connected and league_key_adp and load_adp:
                 access_token = st.session_state["yahoo_token"]["access_token"]
                 import requests as _r
 
@@ -1781,8 +1789,7 @@ elif page == "🎯 Strategy & Target List":
                         "your draft has not happened yet (ADP populates from actual/mock drafts), "
                         "or the league game key needs updating."
                     )
-        elif not yahoo_connected:
-            st.info("💡 Connect your Yahoo account (🏆 My Yahoo League page) to load live ADP from your league.")
+
 
         # ── Build value board ─────────────────────────────────
         rows = []
@@ -1959,13 +1966,13 @@ elif page == "🎯 Strategy & Target List":
                         # Enrich with ADP if loaded
                         sug_h = sug_h[h_c].copy()
                         sug_h["ADP"] = sug_h["Name"].apply(lambda n: _adp_label(_get_adp(n).get("adp",999)))
-                        st.dataframe(sug_h, use_container_width=True, hide_index=True)
+                        st.dataframe(sug_h, width="stretch", hide_index=True)
                     if not sug_p.empty:
                         st.markdown("**Pitcher targets:**")
                         p_c = [c for c in ["Name","Team","composite","W","SV","ERA","xFIP","K%"] if c in sug_p.columns]
                         sug_p = sug_p[p_c].copy()
                         sug_p["ADP"] = sug_p["Name"].apply(lambda n: _adp_label(_get_adp(n).get("adp",999)))
-                        st.dataframe(sug_p, use_container_width=True, hide_index=True)
+                        st.dataframe(sug_p, width="stretch", hide_index=True)
 
         st.markdown("---")
         st.markdown("#### 🔍 Category Gap Finder")
@@ -4183,11 +4190,11 @@ if page == "🏆 My Yahoo League":
                         with rhc:
                             st.markdown("**⚾ Hitters**")
                             h_cols = [c for c in ["Name","Slot","Pos","Team","Status","Z","HR","R","RBI","SB","AVG"] if c in hitters.columns]
-                            st.dataframe(hitters[h_cols], use_container_width=True, hide_index=True)
+                            st.dataframe(hitters[h_cols], width="stretch", hide_index=True)
                         with rpc:
                             st.markdown("**🎯 Pitchers**")
                             p_cols = [c for c in ["Name","Slot","Pos","Team","Status","Z","W","SV","SO","ERA","WHIP"] if c in pitchers.columns]
-                            st.dataframe(pitchers[p_cols], use_container_width=True, hide_index=True)
+                            st.dataframe(pitchers[p_cols], width="stretch", hide_index=True)
 
                         # Pre-fill MC sim
                         st.markdown("---")
