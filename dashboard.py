@@ -1629,9 +1629,40 @@ elif page == "🎯 Strategy & Target List":
     if "adp_cache" not in st.session_state:
         st.session_state["adp_cache"] = {}
 
+    def _normalize_name(n: str) -> str:
+        """Normalize player name for matching — strip accents, dots, normalize Jr/Sr."""
+        import unicodedata
+        n = unicodedata.normalize("NFKD", n)
+        n = "".join(c for c in n if not unicodedata.combining(c))
+        n = n.replace(".", "").replace("'", "").replace("-", " ")
+        n = n.strip().lower()
+        return n
+
+    # Build normalized lookup once per session
+    if "adp_cache_normalized" not in st.session_state:
+        st.session_state["adp_cache_normalized"] = {}
+
+    def _rebuild_norm_cache():
+        st.session_state["adp_cache_normalized"] = {
+            _normalize_name(k): k
+            for k in st.session_state["adp_cache"]
+        }
+
     def _get_adp(name: str) -> dict:
-        """Return ADP dict for a player name, or empty dict if unavailable."""
-        return st.session_state["adp_cache"].get(name, {})
+        """Return ADP dict for a player name — tries exact match first, then normalized."""
+        cache = st.session_state["adp_cache"]
+        if name in cache:
+            return cache[name]
+        # Try normalized match
+        norm_cache = st.session_state.get("adp_cache_normalized", {})
+        if not norm_cache and cache:
+            _rebuild_norm_cache()
+            norm_cache = st.session_state["adp_cache_normalized"]
+        norm_key = _normalize_name(name)
+        real_key = norm_cache.get(norm_key)
+        if real_key:
+            return cache[real_key]
+        return {}
 
     def _adp_label(adp_val: float) -> str:
         if adp_val >= 999: return "—"
@@ -1772,6 +1803,7 @@ elif page == "🎯 Strategy & Target List":
             prog.empty()
             if total_loaded_dr:
                 st.success(f"✅ Loaded ADP for {total_loaded_dr} players")
+                _rebuild_norm_cache()
                 st.rerun()
             else:
                 st.warning("No ADP data returned from Yahoo. Draft may not have occurred yet.")
@@ -1820,7 +1852,7 @@ elif page == "🎯 Strategy & Target List":
                                 "Gap":      (f"+{gap:.0f}" if gap and gap > 0 else f"{gap:.0f}") if gap else "—",
                 "Value":    val_label,
                 "Z-Score":  round(z, 2),
-                "%Owned":   f"{pct*100:.0f}%" if pct else "—",
+                "%Owned":   f"{pct*100:.0f}%" if pct > 0.001 else "—",
             }
             if dr_ptype == "Hitters":
                 r.update({
@@ -1900,13 +1932,18 @@ elif page == "🎯 Strategy & Target List":
                 return "color:#FF4B4B"
             except: return ""
 
-        st.dataframe(
-            bdf.style
-               .map(_status_color,  subset=["Status"])
-               .map(_val_color_dr,  subset=["Value"])
-               .map(_gap_color_dr,  subset=["Gap"]),
-            use_container_width=True, hide_index=True, height=480
-        )
+        # Format numeric columns cleanly
+        fmt_cols = {}
+        if "AVG" in bdf.columns: fmt_cols["AVG"] = "{:.3f}"
+        if "ERA" in bdf.columns: fmt_cols["ERA"] = "{:.2f}"
+        if "WHIP" in bdf.columns: fmt_cols["WHIP"] = "{:.3f}"
+        if "Z-Score" in bdf.columns: fmt_cols["Z-Score"] = "{:.2f}"
+
+        styled = bdf.style             .map(_status_color, subset=["Status"])             .map(_val_color_dr, subset=["Value"])             .map(_gap_color_dr, subset=["Gap"])
+        if fmt_cols:
+            styled = styled.format(fmt_cols, na_rep="—")
+
+        st.dataframe(styled, use_container_width=True, hide_index=True, height=480)
 
         # ── Mark drafted ──────────────────────────────────────
         st.markdown("---")
@@ -2177,7 +2214,7 @@ elif page == "🎯 Strategy & Target List":
 
                 gap_str = (f"+{gap:.0f}" if gap and gap > 0 else f"{gap:.0f}") if gap else "—"
                 adp_display = f"ADP {adp:.1f}" if adp < 999 else "No ADP"
-                owned_str   = f"{pct_own*100:.0f}% owned" if pct_own else ""
+                owned_str   = f"{pct_own*100:.0f}% owned" if pct_own and pct_own > 0.001 else ""
 
                 with st.container(border=True):
                     h1, h2 = st.columns([4,1])
