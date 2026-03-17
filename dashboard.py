@@ -894,7 +894,6 @@ page = st.sidebar.radio("Navigate", [
     "📊 Category Scarcity",
     "🎯 Strategy & Target List",
     "⚙️ Weight Dashboard",
-    "🏟️ Draft Room",
     "🎲 Monte Carlo Sim",
     "🏆 My Yahoo League",
 ])
@@ -1652,7 +1651,7 @@ elif page == "🎯 Strategy & Target List":
         else: return "🚨 Reach"
 
     tab_adp, tab_strat, tab_targets, tab_compare, tab_grade = st.tabs([
-        "📈 ADP Value Board",
+        "🏟️ Draft Room",
         "🗺️ Draft Strategy Planner",
         "⭐ My Target List",
         "📊 Compare Targets",
@@ -1660,182 +1659,147 @@ elif page == "🎯 Strategy & Target List":
     ])
 
     # ══════════════════════════════════════════════════════════
-    #  TAB 1 — ADP VALUE BOARD
+    #  TAB 1 — DRAFT ROOM (ADP + Live Draft Board)
     # ══════════════════════════════════════════════════════════
     with tab_adp:
-        st.markdown("### 📈 ADP Value Board")
+        st.markdown("### 🏟️ Draft Room")
         st.caption(
-            "Compares our FanGraphs-based composite z-score ranking against "
-            "Yahoo ADP. Big positive gap = player going later than they should. "
-            "Big negative gap = being overdrafted."
+            "Live draft board with Yahoo ADP. Mark players as drafted by you or others. "
+            "All players shown with ADP gap — positive = value pick, negative = reach."
         )
 
-        adp_col1, adp_col2, adp_col3 = st.columns(3)
-        adp_ptype  = adp_col1.radio("Player type", ["Hitters","Pitchers"],
-                                    horizontal=True, key="adp_ptype",
-                                    label_visibility="collapsed")
-        adp_filter = adp_col2.selectbox("Show", ["All players","Values only (ADP late)","Reaches (ADP early)","Undrafted sleepers"], key="adp_filter")
-        adp_top_n  = adp_col3.slider("Players shown", 25, 200, 75, 25, key="adp_top_n")
+        # Init draft state
+        if "drafted_h"  not in st.session_state: st.session_state["drafted_h"]  = set()
+        if "drafted_p"  not in st.session_state: st.session_state["drafted_p"]  = set()
+        if "my_h"       not in st.session_state: st.session_state["my_h"]       = []
+        if "my_p"       not in st.session_state: st.session_state["my_p"]       = []
 
-        src_df = bat_rec.copy() if adp_ptype == "Hitters" else pit_rec.copy()
+        # ── Controls ──────────────────────────────────────────
+        dr_c1, dr_c2, dr_c3, dr_c4 = st.columns(4)
+        dr_ptype   = dr_c1.radio("Players", ["Hitters","Pitchers"], horizontal=True,
+                                  key="dr_ptype", label_visibility="collapsed")
+        dr_filter  = dr_c2.selectbox("Show", ["All players","Available only",
+                                               "My picks","Value picks (ADP late)"],
+                                     key="dr_filter")
+        dr_sort    = dr_c3.selectbox("Sort by", ["Our Rank","ADP","Value Gap","Z-Score"],
+                                     key="dr_sort")
+        dr_search  = dr_c4.text_input("🔍 Search player", key="dr_search",
+                                      placeholder="Filter by name...")
 
-        # ── Load ADP from Yahoo if connected ──────────────────
-        adp_loaded = len(st.session_state.get("adp_cache", {}))
+        src_df_dr = bat_rec.copy() if dr_ptype == "Hitters" else pit_rec.copy()
+        drafted_set = st.session_state["drafted_h"] if dr_ptype == "Hitters" else st.session_state["drafted_p"]
+        my_set      = set(st.session_state["my_h"] if dr_ptype == "Hitters" else st.session_state["my_p"])
 
-        st.markdown("**Yahoo ADP Status**")
+        # ── Yahoo ADP status ──────────────────────────────────
+        adp_loaded_dr = len(st.session_state.get("adp_cache", {}))
         if not yahoo_connected:
-            st.warning("⚠️ Not connected to Yahoo. Go to **🏆 My Yahoo League** and click Connect, then come back here.")
-            load_adp = False
+            st.warning("⚠️ Connect Yahoo (🏆 My Yahoo League) to load live ADP.")
+            load_adp_dr = False
         elif not league_key_adp:
-            st.warning("⚠️ Connected but no league selected yet. Go to **🏆 My Yahoo League**, select your league, then come back.")
-            load_adp = False
+            st.warning("⚠️ Select your league on the 🏆 My Yahoo League page first.")
+            load_adp_dr = False
         else:
-            col_btn, col_status = st.columns([2, 3])
-            with col_btn:
-                load_adp = st.button(
-                    f"🔄 {'Reload' if adp_loaded else 'Load'} Yahoo ADP",
-                    key="btn_load_adp",
-                    type="primary" if not adp_loaded else "secondary"
-                )
-            with col_status:
-                if adp_loaded:
-                    st.success(f"✅ ADP loaded for {adp_loaded} players")
-                else:
-                    st.info("👆 Click to pull live ADP from your Yahoo league")
+            adc1, adc2 = st.columns([2,4])
+            load_adp_dr = adc1.button(
+                f"🔄 {'Reload' if adp_loaded_dr else 'Load'} Yahoo ADP",
+                key="btn_load_adp_dr",
+                type="primary" if not adp_loaded_dr else "secondary"
+            )
+            if adp_loaded_dr:
+                adc2.success(f"✅ ADP loaded for {adp_loaded_dr} players")
+            else:
+                adc2.info("👆 Load ADP to see value gaps")
 
-        if yahoo_connected and league_key_adp and load_adp:
-                access_token = st.session_state["yahoo_token"]["access_token"]
-                import requests as _r
+        if yahoo_connected and league_key_adp and load_adp_dr:
+            access_token_dr = st.session_state["yahoo_token"]["access_token"]
+            import requests as _rdr
 
-                def _safe_float(val, default):
-                    try: return float(val) if val not in (None, "", "—") else default
-                    except: return default
+            def _safe_float_dr(val, default):
+                try: return float(val) if val not in (None,"","—") else default
+                except: return default
 
-                def _extract_da(obj):
-                    """
-                    Recursively search any dict/list structure for draft_analysis.
-                    Yahoo's API nests it inconsistently — sometimes it's at player[1],
-                    sometimes inside a list at player[1][0], sometimes deeper.
-                    Returns a dict with average_pick etc., or {} if not found.
-                    """
-                    if isinstance(obj, dict):
-                        if "average_pick" in obj:
-                            return obj  # this IS the draft_analysis dict
-                        if "draft_analysis" in obj:
-                            return _extract_da(obj["draft_analysis"])
-                        for v in obj.values():
-                            found = _extract_da(v)
-                            if found: return found
-                    elif isinstance(obj, list):
-                        for item in obj:
-                            found = _extract_da(item)
-                            if found: return found
-                    return {}
+            def _extract_da_dr(obj):
+                if isinstance(obj, dict):
+                    if "average_pick" in obj: return obj
+                    if "draft_analysis" in obj: return _extract_da_dr(obj["draft_analysis"])
+                    for v in obj.values():
+                        found = _extract_da_dr(v)
+                        if found: return found
+                elif isinstance(obj, list):
+                    for item in obj:
+                        found = _extract_da_dr(item)
+                        if found: return found
+                return {}
 
-                def _parse_adp_response(raw: dict) -> dict:
-                    """Parse players list response and extract draft_analysis."""
-                    result = {}
-                    try:
-                        items = raw["fantasy_content"]["league"][1]["players"]
-                        for k, v in items.items():
-                            if k == "count": continue
-                            player = v["player"]
-                            p0 = player[0]
-                            name = next((x["name"]["full"] for x in p0
-                                         if isinstance(x, dict) and "name" in x), None)
-                            if not name:
-                                continue
-                            # Search entire player structure for draft_analysis
-                            da = _extract_da(player[1:])
-                            result[name] = {
-                                "adp":     _safe_float(da.get("average_pick"),  999),
-                                "adp_rnd": _safe_float(da.get("average_round"), 99),
-                                "pct_own": _safe_float(da.get("percent_drafted"), 0),
-                            }
-                    except Exception as e:
-                        st.warning(f"Parse error: {e}")
-                    return result
+            headers_dr = {"Authorization": f"Bearer {access_token_dr}",
+                          "Accept": "application/json"}
+            prog = st.progress(0, text="Fetching ADP...")
+            total_loaded_dr = 0
 
-                headers = {
-                    "Authorization": f"Bearer {access_token}",
-                    "Accept": "application/json"
-                }
-
-                progress = st.progress(0, text="Fetching ADP...")
-                total_loaded = 0
-
-                # Fetch hitters and pitchers in separate calls
-                # Use ;out=draft_analysis to explicitly request ADP data
-                # Fetch in batches of 25 (start=0,25,50...) up to 200 each
-                for pos_type, label in [("B", "hitters"), ("P", "pitchers")]:
-                    for start in range(0, 200, 25):
-                        url = (
-                            f"https://fantasysports.yahooapis.com/fantasy/v2"
-                            f"/league/{league_key_adp}/players"
-                            f";position={pos_type}"
-                            f";sort=AR"
-                            f";start={start}"
-                            f";count=25"
-                            f";out=draft_analysis"
-                            f"?format=json"
-                        )
-                        try:
-                            resp = _r.get(url, headers=headers, timeout=20)
-                            if resp.status_code == 200:
-                                parsed = _parse_adp_response(resp.json())
-                                st.session_state["adp_cache"].update(parsed)
-                                total_loaded += len(parsed)
-                                if len(parsed) < 25:
-                                    break   # no more players
-                            else:
-                                break
-                        except Exception:
-                            break
-                        pct = min(1.0, (start + 25) / 400 + (0.5 if pos_type == "P" else 0))
-                        progress.progress(pct, text=f"Loading {label} ADP... ({total_loaded} players)")
-
-                progress.empty()
-
-                if total_loaded > 0:
-                    st.success(f"✅ Loaded ADP for {total_loaded} players")
-                    st.rerun()
-                else:
-                    st.error(
-                        "No ADP data returned. Yahoo ADP populates from "
-                        "actual/mock drafts — it may not be available yet "
-                        "if your draft hasn't happened."
+            for pos_type, label in [("B","hitters"),("P","pitchers")]:
+                for start_idx in range(0, 500, 25):  # up to 500 each
+                    url_dr = (
+                        f"https://fantasysports.yahooapis.com/fantasy/v2"
+                        f"/league/{league_key_adp}/players"
+                        f";position={pos_type};sort=AR"
+                        f";start={start_idx};count=25"
+                        f";out=draft_analysis?format=json"
                     )
-                    # Show raw response to help debug
                     try:
-                        debug_url = (
+                        r_dr = _rdr.get(url_dr, headers=headers_dr, timeout=20)
+                        if r_dr.status_code != 200: break
+                        items_dr = r_dr.json()["fantasy_content"]["league"][1]["players"]
+                        batch_count = 0
+                        for k_dr, v_dr in items_dr.items():
+                            if k_dr == "count": continue
+                            p_dr = v_dr["player"]
+                            p0_dr = p_dr[0]
+                            name_dr = next((x["name"]["full"] for x in p0_dr
+                                            if isinstance(x,dict) and "name" in x), None)
+                            if not name_dr: continue
+                            da_dr = _extract_da_dr(p_dr[1:])
+                            st.session_state["adp_cache"][name_dr] = {
+                                "adp":     _safe_float_dr(da_dr.get("average_pick"),  999),
+                                "adp_rnd": _safe_float_dr(da_dr.get("average_round"), 99),
+                                "pct_own": _safe_float_dr(da_dr.get("percent_drafted"),0),
+                            }
+                            batch_count += 1
+                            total_loaded_dr += 1
+                        if batch_count < 25: break
+                    except Exception: break
+                    pct = min(0.99, (start_idx+25)/500*0.5 + (0.5 if pos_type=="P" else 0))
+                    prog.progress(pct, text=f"Loading {label}... ({total_loaded_dr})")
+            prog.empty()
+            if total_loaded_dr:
+                st.success(f"✅ Loaded ADP for {total_loaded_dr} players")
+                st.rerun()
+            else:
+                st.warning("No ADP data returned from Yahoo. Draft may not have occurred yet.")
+                with st.expander("🔍 Debug: raw API response"):
+                    try:
+                        dbg = _rdr.get(
                             f"https://fantasysports.yahooapis.com/fantasy/v2"
                             f"/league/{league_key_adp}/players"
                             f";position=B;sort=AR;start=0;count=3"
-                            f";out=draft_analysis?format=json"
-                        )
-                        debug_r = _r.get(debug_url, headers=headers, timeout=10)
-                        with st.expander("🔍 Debug: Raw Yahoo API response (first 3 players)"):
-                            st.json(debug_r.json() if debug_r.status_code == 200
-                                    else {"error": debug_r.status_code, "body": debug_r.text[:500]})
+                            f";out=draft_analysis?format=json",
+                            headers=headers_dr, timeout=10)
+                        st.json(dbg.json() if dbg.status_code==200
+                                else {"error": dbg.status_code, "body": dbg.text[:500]})
                     except Exception as de:
-                        st.caption(f"Debug fetch failed: {de}")
+                        st.caption(f"Debug failed: {de}")
 
-
-        # ── Build value board ─────────────────────────────────
-        rows = []
-        for _, row in src_df.head(adp_top_n + 50).iterrows():
+        # ── Build board ───────────────────────────────────────
+        rows_dr = []
+        for _, row in src_df_dr.iterrows():
             name   = row.get("Name","")
-            z      = float(row.get("composite", 0))
-            z_rank = int(src_df["composite"].rank(ascending=False)[row.name])
+            z      = float(row.get("composite",0))
+            z_rank = int(src_df_dr["composite"].rank(ascending=False)[row.name])
             adp_d  = _get_adp(name)
             adp    = adp_d.get("adp", 999)
             adp_rnd= adp_d.get("adp_rnd", 99)
             pct    = adp_d.get("pct_own", 0)
-
-            # Value gap: positive = player going later than our rank (value)
             gap    = round(adp - z_rank, 1) if adp < 999 else None
 
-            # Value label
             if gap is None:       val_label = "❓ No ADP"
             elif gap >= 25:       val_label = "🔥 Big Value"
             elif gap >= 12:       val_label = "✅ Value"
@@ -1843,53 +1807,92 @@ elif page == "🎯 Strategy & Target List":
             elif gap >= -20:      val_label = "⚠️ Reach"
             else:                 val_label = "🚨 Big Reach"
 
+            is_mine    = name in my_set
+            is_drafted = name in drafted_set and not is_mine
+
+            status = ("✅ My Pick" if is_mine else
+                      "❌ Drafted" if is_drafted else "🟢 Available")
+
             r = {
-                "Name":         name,
-                "Our Rank":     z_rank,
-                "ADP":          _adp_label(adp),
-                "ADP Rnd":      f"{adp_rnd:.1f}" if adp < 999 else "—",
-                "Gap":          f"+{gap:.0f}" if gap and gap > 0 else (f"{gap:.0f}" if gap else "—"),
-                "Value":        val_label,
-                "Z-Score":      round(z, 2),
-                "%Owned":       f"{pct*100:.0f}%" if pct else "—",
+                "Status":   status,
+                "Name":     name,
+                "Our Rank": z_rank,
+                "ADP":      f"{adp:.1f}" if adp < 999 else "—",
+                "ADP Rnd":  f"{adp_rnd:.0f}" if adp < 999 else "—",
+                "Gap":      (f"+{gap:.0f}" if gap and gap > 0 else f"{gap:.0f}") if gap else "—",
+                "Value":    val_label,
+                "Z-Score":  round(z, 2),
+                "%Owned":   f"{pct*100:.0f}%" if pct else "—",
             }
-            # Add key stats
-            if adp_ptype == "Hitters":
+            if dr_ptype == "Hitters":
                 r.update({
                     "HR":  int(row["HR"])  if pd.notna(row.get("HR"))  else "",
-                    "AVG": round(float(row["AVG"]),3) if pd.notna(row.get("AVG")) else "",
+                    "R":   int(row["R"])   if pd.notna(row.get("R"))   else "",
+                    "RBI": int(row["RBI"]) if pd.notna(row.get("RBI")) else "",
                     "SB":  int(row["SB"])  if pd.notna(row.get("SB"))  else "",
+                    "AVG": round(float(row["AVG"]),3) if pd.notna(row.get("AVG")) else "",
                 })
             else:
                 r.update({
-                    "ERA":  round(float(row["ERA"]),2)   if pd.notna(row.get("ERA"))  else "",
-                    "WHIP": round(float(row["WHIP"]),3)  if pd.notna(row.get("WHIP")) else "",
-                    "SO":   int(row["SO"])  if pd.notna(row.get("SO"))  else "",
+                    "W":   int(row["W"])   if pd.notna(row.get("W"))   else "",
+                    "SV":  int(row["SV"])  if pd.notna(row.get("SV"))  else "",
+                    "SO":  int(row["SO"])  if pd.notna(row.get("SO"))  else "",
+                    "ERA": round(float(row["ERA"]),2)  if pd.notna(row.get("ERA"))  else "",
+                    "WHIP":round(float(row["WHIP"]),3) if pd.notna(row.get("WHIP")) else "",
                 })
-            rows.append(r)
+            rows_dr.append(r)
 
-        vdf = pd.DataFrame(rows)
+        bdf = pd.DataFrame(rows_dr)
+
+        # Apply search
+        if dr_search:
+            bdf = bdf[bdf["Name"].str.contains(dr_search, case=False, na=False)]
 
         # Apply filter
-        if adp_filter == "Values only (ADP late)":
-            vdf = vdf[vdf["Gap"].str.startswith("+", na=False) & vdf["Gap"].ne("—")]
-        elif adp_filter == "Reaches (ADP early)":
-            vdf = vdf[vdf["Gap"].str.startswith("-", na=False)]
-        elif adp_filter == "Undrafted sleepers":
-            vdf = vdf[vdf["ADP"] == "—"]
+        if dr_filter == "Available only":
+            bdf = bdf[bdf["Status"] == "🟢 Available"]
+        elif dr_filter == "My picks":
+            bdf = bdf[bdf["Status"] == "✅ My Pick"]
+        elif dr_filter == "Value picks (ADP late)":
+            bdf = bdf[bdf["Gap"].str.startswith("+", na=False) & bdf["Gap"].ne("—")]
 
-        vdf = vdf.head(adp_top_n)
+        # Sort
+        if dr_sort == "ADP":
+            bdf["_adp_sort"] = bdf["ADP"].apply(lambda x: float(x) if x != "—" else 9999)
+            bdf = bdf.sort_values("_adp_sort").drop(columns=["_adp_sort"])
+        elif dr_sort == "Value Gap":
+            bdf["_gap_sort"] = bdf["Gap"].apply(
+                lambda x: -float(x.replace("+","")) if x not in ("—","") else -9999)
+            bdf = bdf.sort_values("_gap_sort").drop(columns=["_gap_sort"])
+        elif dr_sort == "Z-Score":
+            bdf = bdf.sort_values("Z-Score", ascending=False)
+        # else "Our Rank" — already sorted
 
-        def _val_color(val):
+        # Counters
+        n_avail   = (bdf["Status"] == "🟢 Available").sum()
+        n_drafted = (bdf["Status"] == "❌ Drafted").sum()
+        n_mine    = (bdf["Status"] == "✅ My Pick").sum()
+        ct1, ct2, ct3 = st.columns(3)
+        ct1.metric("Available",  n_avail)
+        ct2.metric("Drafted (others)", n_drafted)
+        ct3.metric("My Picks",   n_mine)
+
+        # Color functions
+        def _status_color(val):
+            if "My Pick" in str(val):  return "color:#4fc3f7;font-weight:bold"
+            if "Drafted" in str(val):  return "color:#888;text-decoration:line-through"
+            return "color:#21C354"
+
+        def _val_color_dr(val):
             v = str(val)
-            if "Big Value" in v: return "color:#21C354;font-weight:bold"
-            if "Value"     in v: return "color:#21C354"
-            if "Fair"      in v: return "color:#888"
-            if "Big Reach" in v: return "color:#FF4B4B;font-weight:bold"
-            if "Reach"     in v: return "color:#FFA500"
+            if "Big Value" in v:  return "color:#21C354;font-weight:bold"
+            if "Value"     in v:  return "color:#21C354"
+            if "Fair"      in v:  return "color:#888"
+            if "Big Reach" in v:  return "color:#FF4B4B;font-weight:bold"
+            if "Reach"     in v:  return "color:#FFA500"
             return "color:#aaa"
 
-        def _gap_color(val):
+        def _gap_color_dr(val):
             try:
                 v = float(str(val).replace("+",""))
                 if v >= 25:  return "color:#21C354;font-weight:bold"
@@ -1900,50 +1903,120 @@ elif page == "🎯 Strategy & Target List":
             except: return ""
 
         st.dataframe(
-            vdf.style.map(_val_color, subset=["Value"])
-                     .map(_gap_color, subset=["Gap"]),
-            use_container_width=True, hide_index=True, height=500
+            bdf.style
+               .map(_status_color,  subset=["Status"])
+               .map(_val_color_dr,  subset=["Value"])
+               .map(_gap_color_dr,  subset=["Gap"]),
+            use_container_width=True, hide_index=True, height=480
         )
 
-        # ── Top value picks highlight ─────────────────────────
-        big_vals = vdf[vdf["Value"].isin(["🔥 Big Value","✅ Value"])].head(5)
-        if not big_vals.empty:
-            st.markdown("---")
-            st.markdown("#### 🎯 Top Value Picks Right Now")
-            vcols = st.columns(min(5, len(big_vals)))
-            for ci, (_, row) in enumerate(big_vals.iterrows()):
-                vcols[ci].metric(
-                    row["Name"],
-                    f"Rank #{row['Our Rank']}",
-                    f"ADP {row['ADP']} (Gap {row['Gap']})",
-                )
-
-        # ── Category punting planner ──────────────────────────
+        # ── Mark drafted ──────────────────────────────────────
         st.markdown("---")
-        st.markdown("#### 🎯 Category Punting Planner")
-        st.caption(
-            "Identify which category to punt based on ADP cost of dominance. "
-            "Punting a weak category lets you load up on others."
-        )
-        punt_cats = st.multiselect(
-            "Categories you're considering punting",
-            ["HR","R","RBI","SB","AVG","W","SV","ERA","WHIP","SO"],
-            key="punt_cats"
-        )
-        if punt_cats:
-            st.markdown("**Impact of punting these categories:**")
-            for cat in punt_cats:
-                is_hit_cat = cat in ["HR","R","RBI","SB","AVG"]
-                df_cat = bat_rec if is_hit_cat else pit_rec
-                z_col  = f"z_{cat}" if cat != "SO" else "z_K"
-                if z_col in df_cat.columns:
-                    top_cat = df_cat.nlargest(10, z_col)[["Name", z_col, "composite"]]
-                    avg_z   = top_cat[z_col].mean()
-                    st.markdown(
-                        f"**{cat}** — Top players average {avg_z:.1f}z in this category. "
-                        f"Punting frees up {'hitting' if is_hit_cat else 'pitching'} "
-                        f"draft capital for other categories."
-                    )
+        st.markdown("#### ✏️ Mark a Player")
+        mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+        all_names_dr = src_df_dr["Name"].tolist()
+        pick_dr = mc1.selectbox("Select player",
+                                [""] + [n for n in all_names_dr if n not in drafted_set],
+                                key="sel_dr")
+        if mc2.button("✅ My pick", key="btn_my_dr") and pick_dr:
+            if dr_ptype == "Hitters":
+                st.session_state["drafted_h"].add(pick_dr)
+                if pick_dr not in st.session_state["my_h"]:
+                    st.session_state["my_h"].append(pick_dr)
+            else:
+                st.session_state["drafted_p"].add(pick_dr)
+                if pick_dr not in st.session_state["my_p"]:
+                    st.session_state["my_p"].append(pick_dr)
+            st.rerun()
+        if mc3.button("❌ Drafted (not me)", key="btn_skip_dr") and pick_dr:
+            if dr_ptype == "Hitters":
+                st.session_state["drafted_h"].add(pick_dr)
+            else:
+                st.session_state["drafted_p"].add(pick_dr)
+            st.rerun()
+        if mc4.button("↩️ Undo last", key="btn_undo_dr"):
+            if dr_ptype == "Hitters" and st.session_state["drafted_h"]:
+                last = list(st.session_state["drafted_h"])[-1]
+                st.session_state["drafted_h"].discard(last)
+                if last in st.session_state["my_h"]:
+                    st.session_state["my_h"].remove(last)
+            elif dr_ptype == "Pitchers" and st.session_state["drafted_p"]:
+                last = list(st.session_state["drafted_p"])[-1]
+                st.session_state["drafted_p"].discard(last)
+                if last in st.session_state["my_p"]:
+                    st.session_state["my_p"].remove(last)
+            st.rerun()
+        if mc5.button("🔄 Reset all", key="btn_reset_dr"):
+            for k in ["drafted_h","drafted_p","my_h","my_p"]:
+                if k in st.session_state: del st.session_state[k]
+            st.rerun()
+
+        # ── My team summary sidebar ───────────────────────────
+        if st.session_state.get("my_h") or st.session_state.get("my_p"):
+            st.markdown("---")
+            st.markdown("#### 🏆 My Team So Far")
+            tm1, tm2 = st.columns(2)
+            with tm1:
+                if st.session_state.get("my_h"):
+                    st.markdown("**⚾ Hitters**")
+                    for name in st.session_state["my_h"]:
+                        row = bat_rec[bat_rec["Name"]==name]
+                        z_val = round(float(row.iloc[0]["composite"]),2) if not row.empty else 0
+                        adp_d2 = _get_adp(name)
+                        adp2   = adp_d2.get("adp",999)
+                        adp_str= f" · ADP {adp2:.0f}" if adp2 < 999 else ""
+                        st.markdown(f"• **{name}** (Z:{z_val}{adp_str})")
+            with tm2:
+                if st.session_state.get("my_p"):
+                    st.markdown("**🎯 Pitchers**")
+                    for name in st.session_state["my_p"]:
+                        row = pit_rec[pit_rec["Name"]==name]
+                        z_val = round(float(row.iloc[0]["composite"]),2) if not row.empty else 0
+                        adp_d2 = _get_adp(name)
+                        adp2   = adp_d2.get("adp",999)
+                        adp_str= f" · ADP {adp2:.0f}" if adp2 < 999 else ""
+                        st.markdown(f"• **{name}** (Z:{z_val}{adp_str})")
+
+            # Category strength bars
+            my_h_df_dr = bat_rec[bat_rec["Name"].isin(st.session_state.get("my_h",[]))]
+            my_p_df_dr = pit_rec[pit_rec["Name"].isin(st.session_state.get("my_p",[]))]
+            if not my_h_df_dr.empty or not my_p_df_dr.empty:
+                st.markdown("**Category Strength**")
+                cat_map = {"HR":"z_HR","R":"z_R","RBI":"z_RBI","SB":"z_SB","AVG":"z_AVG",
+                           "W":"z_W","SV":"z_SV","SO":"z_K","ERA":"z_ERA","WHIP":"z_WHIP"}
+                bar_rows = []
+                for cat, zcol in cat_map.items():
+                    df_c = my_h_df_dr if cat in ["HR","R","RBI","SB","AVG"] else my_p_df_dr
+                    if zcol in df_c.columns and len(df_c) > 0:
+                        val = df_c[zcol].mean()
+                        bar_rows.append({
+                            "Cat": cat, "Z": round(val,2),
+                            "Rating": ("💪 Elite" if val>1.0 else "✅ Strong" if val>0.3
+                                       else "➡️ Avg" if val>-0.3 else "⚠️ Weak")
+                        })
+                if bar_rows:
+                    bdf2 = pd.DataFrame(bar_rows)
+                    fig_bars = go.Figure(go.Bar(
+                        x=bdf2["Cat"], y=bdf2["Z"],
+                        marker_color=["#21C354" if v>0.3 else "#FFA500" if v>-0.3 else "#FF4B4B"
+                                      for v in bdf2["Z"]],
+                        text=[f"{v:+.2f}" for v in bdf2["Z"]], textposition="outside"
+                    ))
+                    fig_bars.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.4)
+                    fig_bars.update_layout(template="plotly_dark", height=220,
+                                           margin=dict(t=10,b=30))
+                    st.plotly_chart(fig_bars, use_container_width=True)
+
+            # Available targets
+            avail_tgts = [t for t in st.session_state.targets
+                          if t["name"] not in st.session_state.get("drafted_h",set())
+                          and t["name"] not in st.session_state.get("drafted_p",set())]
+            if avail_tgts:
+                st.markdown(f"**🎯 Targets still on board ({len(avail_tgts)})**")
+                for t in avail_tgts:
+                    adp_t = _get_adp(t["name"]).get("adp", 999)
+                    adp_str = f" · ADP {adp_t:.0f}" if adp_t < 999 else ""
+                    st.caption(f"• {t['name']} ({t['type']}){adp_str}")
 
     # ══════════════════════════════════════════════════════════
     #  TAB 2 — DRAFT STRATEGY PLANNER
@@ -2699,96 +2772,6 @@ elif page == "⚙️ Weight Dashboard":
             "ERA/WHIP ratio league":"Raise ERA and WHIP importance, increase SIERA weight.",
             "Wins don't matter":"Set W importance to 0 to ignore wins entirely."}.items():
             with st.expander(f"**{tip}**"): st.write(desc)
-
-
-# ═════════════════════════════════════════════════════════════
-#  PAGE 7 — DRAFT ROOM
-# ═════════════════════════════════════════════════════════════
-
-elif page == "🏟️ Draft Room":
-    st.title("🏟️ Live Draft Room")
-    st.caption("Mark players as drafted. Your board updates in real time.")
-    left, right = st.columns([3, 1])
-
-    with left:
-        tab_h, tab_p = st.tabs(["⚾ Hitters","🎯 Pitchers"])
-        with tab_h:
-            avail_h = bat_rec[~bat_rec["Name"].isin(st.session_state.drafted_h)].sort_values("composite",ascending=False).reset_index(drop=True)
-            avail_h.index += 1
-            show_h = [c for c in ["Name","Team","composite","HR","R","RBI","SB","AVG","wRC+","xwOBA","Barrel%","z_HR","z_R","z_RBI","z_SB","z_AVG"] if c in avail_h.columns]
-            is_target = avail_h["Name"].isin([t["name"] for t in st.session_state.targets])
-            st.markdown(f"**{len(avail_h)} hitters available** &nbsp;|&nbsp; 🎯 {is_target.sum()} on your target list")
-            st.dataframe(avail_h[show_h].style.map(style_z,subset=[c for c in show_h if c.startswith("z_")]).background_gradient(subset=["composite"],cmap="RdYlGn"), use_container_width=True, height=420)
-            pick_h = st.selectbox("Select hitter", [""]+avail_h["Name"].tolist(), key="sel_h")
-            ca, cb, cc = st.columns(3)
-            if ca.button("✅ Add to MY team", key="btn_add_h") and pick_h:
-                st.session_state.drafted_h.add(pick_h); st.session_state.my_h.append(pick_h); st.rerun()
-            if cb.button("❌ Drafted (not me)", key="btn_skip_h") and pick_h:
-                st.session_state.drafted_h.add(pick_h); st.rerun()
-            if cc.button("🎯 Add to Targets", key="btn_target_h") and pick_h:
-                rr = bat_rec[bat_rec["Name"]==pick_h]
-                entry = {"name":pick_h,"type":"Hitter","tag":"—",
-                    "composite":float(rr.iloc[0].get("composite",0)) if not rr.empty else 0,"note":"Added from draft room"}
-                if not any(t["name"]==pick_h for t in st.session_state.targets):
-                    st.session_state.targets.append(entry); st.success(f"🎯 {pick_h} added to targets!")
-        with tab_p:
-            avail_p = pit_rec[~pit_rec["Name"].isin(st.session_state.drafted_p)].sort_values("composite",ascending=False).reset_index(drop=True)
-            avail_p.index += 1
-            show_p = [c for c in ["Name","Team","composite","W","SV","ERA","WHIP","SO","xFIP","SIERA","K%","z_W","z_SV","z_ERA","z_WHIP","z_K"] if c in avail_p.columns]
-            st.markdown(f"**{len(avail_p)} pitchers available**")
-            st.dataframe(avail_p[show_p].style.map(style_z,subset=[c for c in show_p if c.startswith("z_")]).background_gradient(subset=["composite"],cmap="RdYlGn"), use_container_width=True, height=420)
-            pick_p = st.selectbox("Select pitcher", [""]+avail_p["Name"].tolist(), key="sel_p")
-            cd, ce, cf = st.columns(3)
-            if cd.button("✅ Add to MY team", key="btn_add_p") and pick_p:
-                st.session_state.drafted_p.add(pick_p); st.session_state.my_p.append(pick_p); st.rerun()
-            if ce.button("❌ Drafted (not me)", key="btn_skip_p") and pick_p:
-                st.session_state.drafted_p.add(pick_p); st.rerun()
-            if cf.button("🎯 Add to Targets", key="btn_target_p") and pick_p:
-                rr = pit_rec[pit_rec["Name"]==pick_p]
-                entry = {"name":pick_p,"type":"Pitcher","tag":"—",
-                    "composite":float(rr.iloc[0].get("composite",0)) if not rr.empty else 0,"note":"Added from draft room"}
-                if not any(t["name"]==pick_p for t in st.session_state.targets):
-                    st.session_state.targets.append(entry); st.success(f"🎯 {pick_p} added to targets!")
-
-    with right:
-        st.markdown("### 🏆 My Team")
-        if st.session_state.my_h:
-            st.markdown("**Hitters**")
-            for name in st.session_state.my_h:
-                row = bat_rec[bat_rec["Name"]==name]
-                composite = row.iloc[0]["composite"] if not row.empty else 0
-                st.caption(f"Composite: {float(composite):.2f}")
-                dot  = {"High":"🔴","Medium":"🟡","Low":"🟢"}.get(risk,"⚪")
-                st.markdown(f"{dot} **{name}** {tag}")
-        if st.session_state.my_p:
-            st.markdown("**Pitchers**")
-            for name in st.session_state.my_p:
-                row = pit_rec[pit_rec["Name"]==name]
-                composite = row.iloc[0]["composite"] if not row.empty else 0
-                st.caption(f"Composite: {float(composite):.2f}")
-                dot  = {"High":"🔴","Medium":"🟡","Low":"🟢"}.get(risk,"⚪")
-                st.markdown(f"{dot} **{name}** {tag}")
-        my_h_df = bat_rec[bat_rec["Name"].isin(st.session_state.my_h)]
-        my_p_df = pit_rec[pit_rec["Name"].isin(st.session_state.my_p)]
-        if not my_h_df.empty or not my_p_df.empty:
-            st.markdown("---"); st.markdown("**Category Strength**")
-            for dfc in [my_h_df, my_p_df]:
-                for zc in [c for c in dfc.columns if c.startswith("z_")]:
-                    val   = dfc[zc].mean(); cat = zc.replace("z_","")
-                    color = "#21C354" if val>0.5 else "#FFA500" if val>-0.5 else "#FF4B4B"
-                    filled = int(min(10, max(0, (val+3)/6*10))); bar = "█"*filled + "░"*(10-filled)
-                    st.markdown(f"**{cat}** {val:+.2f} <span style='color:{color}'>{bar}</span>", unsafe_allow_html=True)
-        avail_targets = [t for t in st.session_state.targets
-                         if t["name"] not in st.session_state.drafted_h and t["name"] not in st.session_state.drafted_p]
-        if avail_targets:
-            st.markdown("---"); st.markdown(f"**🎯 Targets still available ({len(avail_targets)})**")
-            for t in avail_targets: st.caption(f"• {t['name']} ({t['type']})")
-        st.markdown("---")
-        total_drafted = len(st.session_state.drafted_h) + len(st.session_state.drafted_p)
-        st.caption(f"{total_drafted} players drafted total")
-        if st.button("🔄 Reset Draft"):
-            for k in ["drafted_h","drafted_p","my_h","my_p"]: del st.session_state[k]
-            st.rerun()
 
 
 # ═════════════════════════════════════════════════════════════
