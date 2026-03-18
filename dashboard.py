@@ -1626,12 +1626,22 @@ elif page == "🎯 Strategy & Target List":
         return results
 
     # Cache ADP data in session state to avoid re-fetching on every widget change
-    if "adp_cache" not in st.session_state:
-        st.session_state["adp_cache"] = {}
+    if "adp_cache_h" not in st.session_state:
+        st.session_state["adp_cache_h"] = {}   # hitters only
+    if "adp_cache_p" not in st.session_state:
+        st.session_state["adp_cache_p"] = {}   # pitchers only
 
-    def _get_adp(name: str) -> dict:
-        """Return ADP dict for a player name from Yahoo ADP cache."""
-        return st.session_state["adp_cache"].get(name, {})
+    def _get_adp(name: str, is_hitter: bool = True) -> dict:
+        """Return ADP dict for a player name from the correct typed cache."""
+        cache = st.session_state["adp_cache_h"] if is_hitter else st.session_state["adp_cache_p"]
+        return cache.get(name, {})
+
+    def _adp_cache_combined():
+        """Combined cache for backward compat (target list, etc.)."""
+        combined = {}
+        combined.update(st.session_state["adp_cache_h"])
+        combined.update(st.session_state["adp_cache_p"])
+        return combined
 
     def _adp_label(adp_val: float) -> str:
         if adp_val >= 999: return "—"
@@ -1691,7 +1701,7 @@ elif page == "🎯 Strategy & Target List":
         my_set      = set(st.session_state["my_h"] if dr_ptype == "Hitters" else st.session_state["my_p"])
 
         # ── Yahoo ADP status ──────────────────────────────────
-        adp_loaded_dr = len(st.session_state.get("adp_cache", {}))
+        adp_loaded_dr = len(st.session_state.get("adp_cache_h",{})) + len(st.session_state.get("adp_cache_p",{}))
         if not yahoo_connected:
             st.warning("⚠️ Connect Yahoo (🏆 My Yahoo League) to load live ADP.")
             load_adp_dr = False
@@ -1758,11 +1768,15 @@ elif page == "🎯 Strategy & Target List":
                                             if isinstance(x,dict) and "name" in x), None)
                             if not name_dr: continue
                             da_dr = _extract_da_dr(p_dr[1:])
-                            st.session_state["adp_cache"][name_dr] = {
+                            entry_dr = {
                                 "adp":     _safe_float_dr(da_dr.get("average_pick"),  999),
                                 "adp_rnd": _safe_float_dr(da_dr.get("average_round"), 99),
                                 "pct_own": _safe_float_dr(da_dr.get("percent_drafted"),0),
                             }
+                            if pos_type == "B":
+                                st.session_state["adp_cache_h"][name_dr] = entry_dr
+                            else:
+                                st.session_state["adp_cache_p"][name_dr] = entry_dr
                             batch_count += 1
                             total_loaded_dr += 1
                         if batch_count < 25: break
@@ -1791,7 +1805,9 @@ elif page == "🎯 Strategy & Target List":
         # ── Build board from Yahoo ADP (primary source) ──────
         # Yahoo ADP is the single source of truth for player rankings.
         # FanGraphs stats are shown as supplementary context only.
-        adp_cache = st.session_state.get("adp_cache", {})
+        adp_cache = (st.session_state.get("adp_cache_h", {})
+                     if dr_ptype == "Hitters"
+                     else st.session_state.get("adp_cache_p", {}))
         rows_dr = []
 
         if adp_cache:
@@ -1928,7 +1944,7 @@ elif page == "🎯 Strategy & Target List":
         st.markdown("---")
         st.markdown("#### ✏️ Mark a Player")
         mc1, mc2, mc3, mc4, mc5 = st.columns(5)
-        # Use Yahoo names when ADP is loaded, fall back to FanGraphs
+        # Use Yahoo names from the correct typed cache
         if adp_cache:
             all_names_dr = sorted(adp_cache.keys())
         else:
@@ -2143,41 +2159,48 @@ elif page == "🎯 Strategy & Target List":
                 # Filter out already-drafted players (from draft room session state)
                 all_drafted = (st.session_state.get("drafted_h", set()) |
                                st.session_state.get("drafted_p", set()))
-                if rd <= 15:
-                    lo = (rd-1)*league_size
-                    hi = rd*league_size
-                    sug_h = bat_rec[
-                        (bat_rec["rank"]>=lo) &
-                        (bat_rec["rank"]<=hi) &
-                        (~bat_rec["Name"].isin(all_drafted))
-                    ].head(5)
-                    sug_p = pit_rec[
-                        (pit_rec["rank"]>=lo) &
-                        (pit_rec["rank"]<=hi) &
-                        (~pit_rec["Name"].isin(all_drafted))
-                    ].head(3)
-                    if not sug_h.empty:
-                        st.markdown("**Hitter targets** *(excludes drafted players)*:")
-                        h_c = [c for c in ["Name","Team","composite","HR","R","RBI","SB","AVG","xwOBA","Barrel%"] if c in sug_h.columns]
-                        sug_h = sug_h[h_c].copy()
-                        sug_h["ADP"] = sug_h["Name"].apply(lambda n: _adp_label(_get_adp(n).get("adp",999)))
-                        # Highlight my picks in green
-                        my_picks = (st.session_state.get("my_h", []) +
-                                   st.session_state.get("my_p", []))
-                        sug_h["Status"] = sug_h["Name"].apply(
-                            lambda n: "✅ My Pick" if n in my_picks else "")
-                        st.dataframe(sug_h, use_container_width=True, hide_index=True)
-                    if not sug_p.empty:
-                        st.markdown("**Pitcher targets** *(excludes drafted players)*:")
-                        p_c = [c for c in ["Name","Team","composite","W","SV","ERA","xFIP","K%","SwStr%"] if c in sug_p.columns]
-                        sug_p = sug_p[p_c].copy()
-                        sug_p["ADP"] = sug_p["Name"].apply(lambda n: _adp_label(_get_adp(n).get("adp",999)))
-                        my_picks_p = st.session_state.get("my_p", [])
-                        sug_p["Status"] = sug_p["Name"].apply(
-                            lambda n: "✅ My Pick" if n in my_picks_p else "")
-                        st.dataframe(sug_p, use_container_width=True, hide_index=True)
-                    if all_drafted:
-                        st.caption(f"🚫 {len(all_drafted)} drafted players hidden from suggestions")
+                # Player suggestions for all 23 rounds — filter out drafted players
+                lo = (rd-1)*league_size
+                hi = rd*league_size
+                my_picks   = set(st.session_state.get("my_h", []) + st.session_state.get("my_p", []))
+                adp_combo  = _adp_cache_combined()
+
+                # For late rounds (16+), expand the rank window since fewer players rank here
+                if rd > 15:
+                    lo = max(0, (rd-2)*league_size)   # widen window for depth rounds
+                    hi = (rd+1)*league_size
+
+                sug_h = bat_rec[
+                    (bat_rec["rank"]>=lo) &
+                    (bat_rec["rank"]<=hi) &
+                    (~bat_rec["Name"].isin(all_drafted))
+                ].head(5)
+                sug_p = pit_rec[
+                    (pit_rec["rank"]>=lo) &
+                    (pit_rec["rank"]<=hi) &
+                    (~pit_rec["Name"].isin(all_drafted))
+                ].head(3)
+
+                if not sug_h.empty:
+                    st.markdown("**Hitter targets** *(available only)*:")
+                    h_c = [c for c in ["Name","Team","composite","HR","R","RBI",
+                                       "SB","AVG","xwOBA","Barrel%"] if c in sug_h.columns]
+                    sug_h = sug_h[h_c].copy()
+                    sug_h["ADP"]    = sug_h["Name"].apply(lambda n: _adp_label(adp_combo.get(n,{}).get("adp",999)))
+                    sug_h["Status"] = sug_h["Name"].apply(lambda n: "✅ Mine" if n in my_picks else "")
+                    st.dataframe(sug_h, use_container_width=True, hide_index=True)
+
+                if not sug_p.empty:
+                    st.markdown("**Pitcher targets** *(available only)*:")
+                    p_c = [c for c in ["Name","Team","composite","W","SV","ERA",
+                                       "xFIP","K%","SwStr%"] if c in sug_p.columns]
+                    sug_p = sug_p[p_c].copy()
+                    sug_p["ADP"]    = sug_p["Name"].apply(lambda n: _adp_label(adp_combo.get(n,{}).get("adp",999)))
+                    sug_p["Status"] = sug_p["Name"].apply(lambda n: "✅ Mine" if n in my_picks else "")
+                    st.dataframe(sug_p, use_container_width=True, hide_index=True)
+
+                if all_drafted:
+                    st.caption(f"🚫 {len(all_drafted)} drafted players hidden")
 
         st.markdown("---")
         st.markdown("#### 🔍 Category Gap Finder")
@@ -2378,7 +2401,7 @@ elif page == "🎯 Strategy & Target List":
                 h_names = [t["name"] for t in h_targets]
                 h_df = bat_rec[bat_rec["Name"].isin(h_names)].copy()
                 h_df["ADP"] = h_df["Name"].apply(
-                    lambda n: _adp_label(_get_adp(n).get("adp",999)))
+                    lambda n: _adp_label((_adp_cache_combined()).get(n, {}).get("adp",999)))
 
                 # Stats table
                 cc = [c for c in ["Name","Team","ADP","composite","HR","R","RBI",
@@ -2434,7 +2457,7 @@ elif page == "🎯 Strategy & Target List":
                 p_names = [t["name"] for t in p_targets]
                 p_df = pit_rec[pit_rec["Name"].isin(p_names)].copy()
                 p_df["ADP"] = p_df["Name"].apply(
-                    lambda n: _adp_label(_get_adp(n).get("adp",999)))
+                    lambda n: _adp_label((_adp_cache_combined()).get(n, {}).get("adp",999)))
 
                 cc = [c for c in ["Name","Team","ADP","composite","W","SV","ERA",
                                    "WHIP","SO","xFIP","SIERA","K%","SwStr%","GB%"]
