@@ -1903,12 +1903,22 @@ elif page == "🎯 Strategy & Target List":
                 return "color:#FF4B4B"
             except: return ""
 
-        # Format and display
+        # Convert mixed-type columns to proper types before styling
+        # ADP is float or None — fill None with NaN so pandas handles it cleanly
+        if "ADP" in bdf.columns:
+            bdf["ADP"] = pd.to_numeric(bdf["ADP"], errors="coerce")
+        for col in ["AVG", "ERA", "WHIP", "Z-Score"]:
+            if col in bdf.columns:
+                bdf[col] = pd.to_numeric(bdf[col], errors="coerce")
+        for col in ["HR","R","RBI","SB","W","SV","SO"]:
+            if col in bdf.columns:
+                bdf[col] = pd.to_numeric(bdf[col], errors="coerce")
+
         fmt_cols = {"Z-Score": "{:.2f}"}
-        if "AVG" in bdf.columns:  fmt_cols["AVG"]  = "{:.3f}"
-        if "ERA" in bdf.columns:  fmt_cols["ERA"]  = "{:.2f}"
+        if "ADP"  in bdf.columns: fmt_cols["ADP"]  = "{:.1f}"
+        if "AVG"  in bdf.columns: fmt_cols["AVG"]  = "{:.3f}"
+        if "ERA"  in bdf.columns: fmt_cols["ERA"]  = "{:.2f}"
         if "WHIP" in bdf.columns: fmt_cols["WHIP"] = "{:.3f}"
-        if "ADP" in bdf.columns:  fmt_cols["ADP"]  = "{:.1f}"
 
         styled = bdf.style.map(_status_color, subset=["Status"])
         styled = styled.format(fmt_cols, na_rep="—")
