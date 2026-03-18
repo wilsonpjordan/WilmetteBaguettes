@@ -2061,39 +2061,100 @@ elif page == "🎯 Strategy & Target List":
             for rd in range(1, total_rounds+1)
         ]
         round_advice = {
-            1:  ("Superstar anchor",     "Elite 1st-rounders: 50+ HR pace, .300+ AVG, or generational SP. Don't reach."),
-            2:  ("Top-10 talent",        "Best player available. If you didn't get SB in R1, address it now."),
-            3:  ("SB or SP ace",         "SB dries up fast. If no speed yet, round 3 is your last cheap window."),
-            4:  ("SP or power bat",      "Start your SP core. Target xFIP < 3.20 starters over ERA name-brands."),
-            5:  ("Upside SP",            "Second SP or breakout hitter. Breakout Score > 44 is your filter."),
-            6:  ("Category fill",        "Identify your weakest projected category and target specifically."),
-            7:  ("Closer or depth",      "Saves if your league counts them. Otherwise best available."),
-            8:  ("Depth + upside",       "Players with high Breakout Score and low composite — buy low."),
-            9:  ("Bench depth",          "Multi-position eligibility is gold in Yahoo. Prioritize SP/SS/2B."),
-            10: ("Lottery tickets",      "Young players with elite underlying metrics but low ADP — Barrel% > 12%."),
+            1:  ("Superstar anchor",
+                 "Elite 1st-rounders: Judge, Ohtani, Witt, Acuna territory. 50+ HR pace, .300+ AVG, or generational SP. "
+                 "Don't reach — if your guy is gone, take the next best player, not a consolation prize."),
+            2:  ("Top-10 talent",
+                 "Best player available. If you missed SB in R1, this is your last easy window for a true speed elite. "
+                 "Power hitters with multi-cat upside (HR+R+RBI) are also fine here."),
+            3:  ("Speed or SP ace",
+                 "SB supply dries up FAST — by round 4 the elite speedsters are gone. "
+                 "If you have 0 SB so far, prioritize here. Otherwise lock in your SP1 with an ace-level arm (xFIP < 3.10)."),
+            4:  ("SP core / power bat",
+                 "Build your pitching core. Target proven starters with xFIP under 3.30 over ERA flukes. "
+                 "If pitching is covered, take a power hitter with 35+ HR upside."),
+            5:  ("SP2 or breakout hitter",
+                 "Secure your rotation's second pillar. Alternatively, target a hitter with elite Barrel% (>12%) "
+                 "or SwStr% suppression — players whose underlying metrics outpace their current ADP."),
+            6:  ("Category gap fill",
+                 "Audit your roster: which of the 10 cats are you losing? If weak in AVG, target a contact hitter. "
+                 "If weak in SV, grab a proven closer. This is your last round for targeted category construction before depth takes over."),
+            7:  ("Closer + ratio stabilizer",
+                 "Lock in saves. Elite closers (35+ SV pace) rarely make it past round 8. "
+                 "Also consider high-K, low-WHIP middle relievers who help ERA/WHIP without costing you a starter slot."),
+            8:  ("High-upside flier",
+                 "Buy low on players with elite underlying metrics but depressed ADP — injuries, role uncertainty, or "
+                 "slow starts last year. Barrel% > 12% hitters or SwStr% > 13% pitchers going in rounds 9-12 are your targets."),
+            9:  ("Multi-position flex",
+                 "Yahoo multi-position eligibility is a massive advantage — 2B/SS, 1B/3B, OF/1B players give you lineup flexibility. "
+                 "Prioritize players who qualify at 2+ positions even if their composite rank is slightly lower."),
+            10: ("Lottery tickets / SP depth",
+                 "Young breakout candidates with elite batted-ball profiles (Barrel% > 10%, hard contact > 40%). "
+                 "SP streamers who can be used in 2-start weeks. Target players on good offenses for run/RBI counting stat support."),
+            11: ("Saves depth / WHIP anchor",
+                 "Second closer or high-leverage RP with saves opportunities. In H2H, SV can swing weekly matchups. "
+                 "Also good round for a WHIP anchor — groundball pitchers with K-BB% > 15%."),
+            12: ("Bench hitter with eligibility",
+                 "A versatile hitter who can fill holes across your lineup. Look for players with 2+ position eligibility "
+                 "and platoon upside — someone who starts vs RHP and gives you lineup flexibility on any given week."),
+            13: ("SP handcuff / streamer",
+                 "A reliable streaming SP — someone with 2 starts in favorable matchup weeks. Target pitchers on good offenses "
+                 "for win support and K rates above 25%. This spot is essentially a weekly waiver wire preview."),
+            14: ("Speed or AVG specialist",
+                 "SB specialists or high-AVG contact hitters who help you win weekly ratio battles. "
+                 "A .290+ AVG hitter with 20+ SB potential can be a weekly category winner on his own."),
+            15: ("Catcher depth",
+                 "If you haven't locked in a second catcher yet, do it now before the pool is gone. "
+                 "Look for catchers with framing metrics that suggest playing time security even if offense is marginal."),
+            16: ("RP ratio stabilizer",
+                 "A high-K, low-BB reliever who anchors your ERA and WHIP without eating into SP slots. "
+                 "K-BB% > 18% and GB% > 48% are your filters. These arms help you win pitching ratio cats on weeks your SP struggles."),
+            17: ("Upside SP flier",
+                 "A high-ceiling SP with stuff metrics that outpace results — high SwStr%, decent xFIP, but ERA is fluky. "
+                 "These are your 'start when the matchup is right' arms. FanGraphs Stuff+ > 105 is a good filter."),
+            18: ("Handcuff hitter",
+                 "The backup for your most injury-prone star. If you drafted a player with IL history, grab his handcuff. "
+                 "Also consider platoon hitters who rake vs LHP — useful in daily-swap leagues."),
+            19: ("Counting stat accumulator",
+                 "High-PA hitters on good offenses who rack up R and RBI even without elite tools. "
+                 "Look for 3-4-5 hole hitters on playoff-contending MLB teams. Playing time security matters here."),
+            20: ("Closer handcuff",
+                 "Back up your closer spot. Identify the 8th-inning setup man behind your closer — if the closer gets hurt "
+                 "or loses the job, this player steps in. Also good for teams with committee save situations."),
+            21: ("Deep sleeper / prospect",
+                 "A prospect with a clear path to the majors mid-season, or a veteran on a new team who hasn't "
+                 "gotten buzz yet. xwOBA > .340 with a new hitting coach situation is a classic buy-low signal."),
+            22: ("IL gamble",
+                 "A high-upside player currently on the IL with a return date within 4-6 weeks. "
+                 "These are essentially free picks — worst case they stay hurt, best case you get a starter-quality player for a bench price."),
+            23: ("Last pick — pure upside",
+                 "Swing for the fences. 23rd round pick is nearly worthless at face value — take the highest-ceiling "
+                 "player available regardless of risk. Young pitcher with electric stuff, or a hitter with elite exit velocity "
+                 "who just needs a starting job. Nothing to lose."),
         }
-        for rd in range(1, min(total_rounds+1, 11)):
+        for rd in range(1, total_rounds+1):
             pick_no   = pick_numbers[rd-1] if rd-1 < len(pick_numbers) else "—"
             label, advice = round_advice.get(rd, (f"Round {rd}", "Best player available."))
             with st.expander(f"**Round {rd}** — Pick ~{pick_no}  |  {label}"):
                 st.write(advice)
-                if rd <= 5:
-                    lo, hi = (rd-1)*league_size, rd*league_size
-                    sug_h  = bat_rec[(bat_rec["rank"]>=lo)&(bat_rec["rank"]<=hi)].head(4)
-                    sug_p  = pit_rec[(pit_rec["rank"]>=lo)&(pit_rec["rank"]<=hi)].head(3)
+                # Show player suggestions for rounds 1-10
+                if rd <= 10:
+                    lo = (rd-1)*league_size
+                    hi = rd*league_size
+                    sug_h = bat_rec[(bat_rec["rank"]>=lo)&(bat_rec["rank"]<=hi)].head(5)
+                    sug_p = pit_rec[(pit_rec["rank"]>=lo)&(pit_rec["rank"]<=hi)].head(3)
                     if not sug_h.empty:
                         st.markdown("**Hitter targets:**")
-                        h_c = [c for c in ["Name","Team","composite","HR","AVG","xwOBA"] if c in sug_h.columns]
-                        # Enrich with ADP if loaded
+                        h_c = [c for c in ["Name","Team","composite","HR","R","RBI","SB","AVG","xwOBA","Barrel%"] if c in sug_h.columns]
                         sug_h = sug_h[h_c].copy()
                         sug_h["ADP"] = sug_h["Name"].apply(lambda n: _adp_label(_get_adp(n).get("adp",999)))
-                        st.dataframe(sug_h, width="stretch", hide_index=True)
+                        st.dataframe(sug_h, use_container_width=True, hide_index=True)
                     if not sug_p.empty:
                         st.markdown("**Pitcher targets:**")
-                        p_c = [c for c in ["Name","Team","composite","W","SV","ERA","xFIP","K%"] if c in sug_p.columns]
+                        p_c = [c for c in ["Name","Team","composite","W","SV","ERA","xFIP","K%","SwStr%"] if c in sug_p.columns]
                         sug_p = sug_p[p_c].copy()
                         sug_p["ADP"] = sug_p["Name"].apply(lambda n: _adp_label(_get_adp(n).get("adp",999)))
-                        st.dataframe(sug_p, width="stretch", hide_index=True)
+                        st.dataframe(sug_p, use_container_width=True, hide_index=True)
 
         st.markdown("---")
         st.markdown("#### 🔍 Category Gap Finder")
