@@ -2043,9 +2043,11 @@ elif page == "🎯 Strategy & Target List":
         st.markdown("### 🗺️ Draft Strategy Planner")
         league_size = st.slider("League size (teams)", 8, 16, 12)
         your_pick   = st.slider("Your draft position", 1, league_size, 6)
-        rs = st.columns(2)
-        h_slots = rs[0].number_input("Hitter roster spots", 1, 15, 9)
-        p_slots = rs[1].number_input("Pitcher roster spots", 1, 15, 7)
+        rs = st.columns(3)
+        h_slots  = rs[0].number_input("Hitter spots (starters)", 1, 15, 9)
+        p_slots  = rs[1].number_input("Pitcher spots (starters)", 1, 15, 7)
+        bn_slots = rs[2].number_input("Bench spots", 0, 10, 7,
+                                      help="Yahoo standard: 5 bench + IL spots = 7 extra rounds")
         st.markdown("---")
         cat_priorities = st.multiselect(
             "Your category priorities (select in order of importance)",
@@ -2054,7 +2056,7 @@ elif page == "🎯 Strategy & Target List":
         )
         st.markdown("---")
         st.markdown("#### 📋 Round-by-Round Guide")
-        total_rounds = h_slots + p_slots
+        total_rounds = h_slots + p_slots + bn_slots  # starters + bench = 23 in Yahoo standard
         pick_numbers = [
             (rd-1)*league_size + your_pick if rd % 2 == 1
             else rd*league_size - your_pick + 1
@@ -2137,24 +2139,45 @@ elif page == "🎯 Strategy & Target List":
             label, advice = round_advice.get(rd, (f"Round {rd}", "Best player available."))
             with st.expander(f"**Round {rd}** — Pick ~{pick_no}  |  {label}"):
                 st.write(advice)
-                # Show player suggestions for rounds 1-10
-                if rd <= 10:
+                # Show player suggestions for rounds 1-15
+                # Filter out already-drafted players (from draft room session state)
+                all_drafted = (st.session_state.get("drafted_h", set()) |
+                               st.session_state.get("drafted_p", set()))
+                if rd <= 15:
                     lo = (rd-1)*league_size
                     hi = rd*league_size
-                    sug_h = bat_rec[(bat_rec["rank"]>=lo)&(bat_rec["rank"]<=hi)].head(5)
-                    sug_p = pit_rec[(pit_rec["rank"]>=lo)&(pit_rec["rank"]<=hi)].head(3)
+                    sug_h = bat_rec[
+                        (bat_rec["rank"]>=lo) &
+                        (bat_rec["rank"]<=hi) &
+                        (~bat_rec["Name"].isin(all_drafted))
+                    ].head(5)
+                    sug_p = pit_rec[
+                        (pit_rec["rank"]>=lo) &
+                        (pit_rec["rank"]<=hi) &
+                        (~pit_rec["Name"].isin(all_drafted))
+                    ].head(3)
                     if not sug_h.empty:
-                        st.markdown("**Hitter targets:**")
+                        st.markdown("**Hitter targets** *(excludes drafted players)*:")
                         h_c = [c for c in ["Name","Team","composite","HR","R","RBI","SB","AVG","xwOBA","Barrel%"] if c in sug_h.columns]
                         sug_h = sug_h[h_c].copy()
                         sug_h["ADP"] = sug_h["Name"].apply(lambda n: _adp_label(_get_adp(n).get("adp",999)))
+                        # Highlight my picks in green
+                        my_picks = (st.session_state.get("my_h", []) +
+                                   st.session_state.get("my_p", []))
+                        sug_h["Status"] = sug_h["Name"].apply(
+                            lambda n: "✅ My Pick" if n in my_picks else "")
                         st.dataframe(sug_h, use_container_width=True, hide_index=True)
                     if not sug_p.empty:
-                        st.markdown("**Pitcher targets:**")
+                        st.markdown("**Pitcher targets** *(excludes drafted players)*:")
                         p_c = [c for c in ["Name","Team","composite","W","SV","ERA","xFIP","K%","SwStr%"] if c in sug_p.columns]
                         sug_p = sug_p[p_c].copy()
                         sug_p["ADP"] = sug_p["Name"].apply(lambda n: _adp_label(_get_adp(n).get("adp",999)))
+                        my_picks_p = st.session_state.get("my_p", [])
+                        sug_p["Status"] = sug_p["Name"].apply(
+                            lambda n: "✅ My Pick" if n in my_picks_p else "")
                         st.dataframe(sug_p, use_container_width=True, hide_index=True)
+                    if all_drafted:
+                        st.caption(f"🚫 {len(all_drafted)} drafted players hidden from suggestions")
 
         st.markdown("---")
         st.markdown("#### 🔍 Category Gap Finder")
