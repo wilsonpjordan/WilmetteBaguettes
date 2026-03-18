@@ -1629,40 +1629,9 @@ elif page == "🎯 Strategy & Target List":
     if "adp_cache" not in st.session_state:
         st.session_state["adp_cache"] = {}
 
-    def _normalize_name(n: str) -> str:
-        """Normalize player name for matching — strip accents, dots, normalize Jr/Sr."""
-        import unicodedata
-        n = unicodedata.normalize("NFKD", n)
-        n = "".join(c for c in n if not unicodedata.combining(c))
-        n = n.replace(".", "").replace("'", "").replace("-", " ")
-        n = n.strip().lower()
-        return n
-
-    # Build normalized lookup once per session
-    if "adp_cache_normalized" not in st.session_state:
-        st.session_state["adp_cache_normalized"] = {}
-
-    def _rebuild_norm_cache():
-        st.session_state["adp_cache_normalized"] = {
-            _normalize_name(k): k
-            for k in st.session_state["adp_cache"]
-        }
-
     def _get_adp(name: str) -> dict:
-        """Return ADP dict for a player name — tries exact match first, then normalized."""
-        cache = st.session_state["adp_cache"]
-        if name in cache:
-            return cache[name]
-        # Try normalized match
-        norm_cache = st.session_state.get("adp_cache_normalized", {})
-        if not norm_cache and cache:
-            _rebuild_norm_cache()
-            norm_cache = st.session_state["adp_cache_normalized"]
-        norm_key = _normalize_name(name)
-        real_key = norm_cache.get(norm_key)
-        if real_key:
-            return cache[real_key]
-        return {}
+        """Return ADP dict for a player name from Yahoo ADP cache."""
+        return st.session_state["adp_cache"].get(name, {})
 
     def _adp_label(adp_val: float) -> str:
         if adp_val >= 999: return "—"
@@ -1710,9 +1679,9 @@ elif page == "🎯 Strategy & Target List":
         dr_ptype   = dr_c1.radio("Players", ["Hitters","Pitchers"], horizontal=True,
                                   key="dr_ptype", label_visibility="collapsed")
         dr_filter  = dr_c2.selectbox("Show", ["All players","Available only",
-                                               "My picks","Value picks (ADP late)"],
+                                               "My picks","Has ADP"],
                                      key="dr_filter")
-        dr_sort    = dr_c3.selectbox("Sort by", ["Our Rank","ADP","Value Gap","Z-Score"],
+        dr_sort    = dr_c3.selectbox("Sort by", ["ADP","Z-Score","Name"],
                                      key="dr_sort")
         dr_search  = dr_c4.text_input("🔍 Search player", key="dr_search",
                                       placeholder="Filter by name...")
@@ -1803,7 +1772,6 @@ elif page == "🎯 Strategy & Target List":
             prog.empty()
             if total_loaded_dr:
                 st.success(f"✅ Loaded ADP for {total_loaded_dr} players")
-                _rebuild_norm_cache()
                 st.rerun()
             else:
                 st.warning("No ADP data returned from Yahoo. Draft may not have occurred yet.")
@@ -1820,57 +1788,62 @@ elif page == "🎯 Strategy & Target List":
                     except Exception as de:
                         st.caption(f"Debug failed: {de}")
 
-        # ── Build board ───────────────────────────────────────
+        # ── Build board from Yahoo ADP (primary source) ──────
+        # Yahoo ADP is the single source of truth for player rankings.
+        # FanGraphs stats are shown as supplementary context only.
+        adp_cache = st.session_state.get("adp_cache", {})
         rows_dr = []
-        for _, row in src_df_dr.iterrows():
-            name   = row.get("Name","")
-            z      = float(row.get("composite",0))
-            z_rank = int(src_df_dr["composite"].rank(ascending=False)[row.name])
-            adp_d  = _get_adp(name)
-            adp    = adp_d.get("adp", 999)
-            pct    = adp_d.get("pct_own", 0)
-            gap    = round(adp - z_rank, 1) if adp < 999 else None
 
-            if gap is None:       val_label = "❓ No ADP"
-            elif gap >= 25:       val_label = "🔥 Big Value"
-            elif gap >= 12:       val_label = "✅ Value"
-            elif gap >= -8:       val_label = "➡️ Fair"
-            elif gap >= -20:      val_label = "⚠️ Reach"
-            else:                 val_label = "🚨 Big Reach"
-
-            is_mine    = name in my_set
-            is_drafted = name in drafted_set and not is_mine
-
-            status = ("✅ My Pick" if is_mine else
-                      "❌ Drafted" if is_drafted else "🟢 Available")
-
-            r = {
-                "Status":   status,
-                "Name":     name,
-                "Our Rank": z_rank,
-                "ADP":      f"{adp:.1f}" if adp < 999 else "—",
-                                "Gap":      (f"+{gap:.0f}" if gap and gap > 0 else f"{gap:.0f}") if gap else "—",
-                "Value":    val_label,
-                "Z-Score":  round(z, 2),
-                "%Owned":   f"{pct*100:.0f}%" if pct > 0.001 else "—",
-            }
-            if dr_ptype == "Hitters":
-                r.update({
-                    "HR":  int(row["HR"])  if pd.notna(row.get("HR"))  else "",
-                    "R":   int(row["R"])   if pd.notna(row.get("R"))   else "",
-                    "RBI": int(row["RBI"]) if pd.notna(row.get("RBI")) else "",
-                    "SB":  int(row["SB"])  if pd.notna(row.get("SB"))  else "",
-                    "AVG": round(float(row["AVG"]),3) if pd.notna(row.get("AVG")) else "",
-                })
-            else:
-                r.update({
-                    "W":   int(row["W"])   if pd.notna(row.get("W"))   else "",
-                    "SV":  int(row["SV"])  if pd.notna(row.get("SV"))  else "",
-                    "SO":  int(row["SO"])  if pd.notna(row.get("SO"))  else "",
-                    "ERA": round(float(row["ERA"]),2)  if pd.notna(row.get("ERA"))  else "",
-                    "WHIP":round(float(row["WHIP"]),3) if pd.notna(row.get("WHIP")) else "",
-                })
-            rows_dr.append(r)
+        if adp_cache:
+            for yahoo_name, adp_d in adp_cache.items():
+                adp = adp_d.get("adp", 999)
+                pct = adp_d.get("pct_own", 0)
+                is_mine    = yahoo_name in my_set
+                is_drafted = yahoo_name in drafted_set and not is_mine
+                status = ("✅ My Pick" if is_mine else
+                          "❌ Drafted" if is_drafted else "🟢 Available")
+                # Supplement with FanGraphs stats (best effort, no penalty if missing)
+                is_hit   = dr_ptype == "Hitters"
+                stat_df  = bat_rec if is_hit else pit_rec
+                stat_row = stat_df[stat_df["Name"] == yahoo_name]
+                z = float(stat_row.iloc[0].get("composite",0)) if not stat_row.empty else 0.0
+                r = {
+                    "Status":  status,
+                    "Name":    yahoo_name,
+                    "ADP":     round(adp, 1) if adp < 999 else None,
+                    "Z-Score": round(z, 2),
+                    "%Owned":  f"{pct*100:.0f}%" if pct > 0.001 else "—",
+                }
+                if is_hit:
+                    for col, fmt in [("HR",int),("R",int),("RBI",int),("SB",int)]:
+                        r[col] = fmt(stat_row.iloc[0][col]) if not stat_row.empty and pd.notna(stat_row.iloc[0].get(col)) else ""
+                    r["AVG"] = round(float(stat_row.iloc[0]["AVG"]),3) if not stat_row.empty and pd.notna(stat_row.iloc[0].get("AVG")) else ""
+                else:
+                    for col, fmt in [("W",int),("SV",int),("SO",int)]:
+                        r[col] = fmt(stat_row.iloc[0][col]) if not stat_row.empty and pd.notna(stat_row.iloc[0].get(col)) else ""
+                    r["ERA"]  = round(float(stat_row.iloc[0]["ERA"]),2)  if not stat_row.empty and pd.notna(stat_row.iloc[0].get("ERA"))  else ""
+                    r["WHIP"] = round(float(stat_row.iloc[0]["WHIP"]),3) if not stat_row.empty and pd.notna(stat_row.iloc[0].get("WHIP")) else ""
+                rows_dr.append(r)
+        else:
+            # No ADP loaded — show FanGraphs data without ADP column
+            for _, row in src_df_dr.iterrows():
+                name = row.get("Name","")
+                is_mine    = name in my_set
+                is_drafted = name in drafted_set and not is_mine
+                status = ("✅ My Pick" if is_mine else
+                          "❌ Drafted" if is_drafted else "🟢 Available")
+                r = {"Status": status, "Name": name, "ADP": None,
+                     "Z-Score": round(float(row.get("composite",0)),2), "%Owned": "—"}
+                if dr_ptype == "Hitters":
+                    for col, fmt in [("HR",int),("R",int),("RBI",int),("SB",int)]:
+                        r[col] = fmt(row[col]) if pd.notna(row.get(col)) else ""
+                    r["AVG"] = round(float(row["AVG"]),3) if pd.notna(row.get("AVG")) else ""
+                else:
+                    for col, fmt in [("W",int),("SV",int),("SO",int)]:
+                        r[col] = fmt(row[col]) if pd.notna(row.get(col)) else ""
+                    r["ERA"]  = round(float(row["ERA"]),2)  if pd.notna(row.get("ERA"))  else ""
+                    r["WHIP"] = round(float(row["WHIP"]),3) if pd.notna(row.get("WHIP")) else ""
+                rows_dr.append(r)
 
         bdf = pd.DataFrame(rows_dr)
 
@@ -1883,20 +1856,18 @@ elif page == "🎯 Strategy & Target List":
             bdf = bdf[bdf["Status"] == "🟢 Available"]
         elif dr_filter == "My picks":
             bdf = bdf[bdf["Status"] == "✅ My Pick"]
-        elif dr_filter == "Value picks (ADP late)":
-            bdf = bdf[bdf["Gap"].str.startswith("+", na=False) & bdf["Gap"].ne("—")]
+        elif dr_filter == "Has ADP":
+            bdf = bdf[bdf["ADP"].notna()]
 
         # Sort
         if dr_sort == "ADP":
-            bdf["_adp_sort"] = bdf["ADP"].apply(lambda x: float(x) if x != "—" else 9999)
+            bdf["_adp_sort"] = bdf["ADP"].apply(
+                lambda x: float(x) if x is not None and x == x else 9999)
             bdf = bdf.sort_values("_adp_sort").drop(columns=["_adp_sort"])
-        elif dr_sort == "Value Gap":
-            bdf["_gap_sort"] = bdf["Gap"].apply(
-                lambda x: -float(x.replace("+","")) if x not in ("—","") else -9999)
-            bdf = bdf.sort_values("_gap_sort").drop(columns=["_gap_sort"])
         elif dr_sort == "Z-Score":
             bdf = bdf.sort_values("Z-Score", ascending=False)
-        # else "Our Rank" — already sorted
+        elif dr_sort == "Name":
+            bdf = bdf.sort_values("Name")
 
         # Counters
         n_avail   = (bdf["Status"] == "🟢 Available").sum()
@@ -1932,24 +1903,26 @@ elif page == "🎯 Strategy & Target List":
                 return "color:#FF4B4B"
             except: return ""
 
-        # Format numeric columns cleanly
-        fmt_cols = {}
-        if "AVG" in bdf.columns: fmt_cols["AVG"] = "{:.3f}"
-        if "ERA" in bdf.columns: fmt_cols["ERA"] = "{:.2f}"
+        # Format and display
+        fmt_cols = {"Z-Score": "{:.2f}"}
+        if "AVG" in bdf.columns:  fmt_cols["AVG"]  = "{:.3f}"
+        if "ERA" in bdf.columns:  fmt_cols["ERA"]  = "{:.2f}"
         if "WHIP" in bdf.columns: fmt_cols["WHIP"] = "{:.3f}"
-        if "Z-Score" in bdf.columns: fmt_cols["Z-Score"] = "{:.2f}"
+        if "ADP" in bdf.columns:  fmt_cols["ADP"]  = "{:.1f}"
 
-        styled = bdf.style             .map(_status_color, subset=["Status"])             .map(_val_color_dr, subset=["Value"])             .map(_gap_color_dr, subset=["Gap"])
-        if fmt_cols:
-            styled = styled.format(fmt_cols, na_rep="—")
-
+        styled = bdf.style.map(_status_color, subset=["Status"])
+        styled = styled.format(fmt_cols, na_rep="—")
         st.dataframe(styled, use_container_width=True, hide_index=True, height=480)
 
         # ── Mark drafted ──────────────────────────────────────
         st.markdown("---")
         st.markdown("#### ✏️ Mark a Player")
         mc1, mc2, mc3, mc4, mc5 = st.columns(5)
-        all_names_dr = src_df_dr["Name"].tolist()
+        # Use Yahoo names when ADP is loaded, fall back to FanGraphs
+        if adp_cache:
+            all_names_dr = sorted(adp_cache.keys())
+        else:
+            all_names_dr = src_df_dr["Name"].tolist()
         pick_dr = mc1.selectbox("Select player",
                                 [""] + [n for n in all_names_dr if n not in drafted_set],
                                 key="sel_dr")
