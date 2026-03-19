@@ -1316,7 +1316,7 @@ elif page == "🔍 Player Deep Dive":
             fig_radar.add_trace(go.Scatterpolar(
                 r=probs_r + [probs_r[0]], theta=cats_r + [cats_r[0]],
                 fill="toself", line_color="#4fc3f7",
-                fillcolor="rgba(79,195,247,0.15)", name="Win%"))
+                fillcolor="rgba(79,195,247,0.15)", name="Cat Win%"))
             fig_radar.add_trace(go.Scatterpolar(
                 r=[50] * (len(cats_r) + 1), theta=cats_r + [cats_r[0]],
                 mode="lines", line=dict(dash="dash", color="gray", width=1),
@@ -3393,11 +3393,11 @@ elif page == "🎲 Monte Carlo Sim":
                 strength = ("💪 Dominant" if awp >= 0.65 else "✅ Solid" if awp >= 0.52 else
                             "⚖️ Toss-up" if awp >= 0.46 else "⚠️ Weak" if awp >= 0.35 else "🚨 Punt")
                 win_pct_rows.append({
-                    "Category": cat, "Win%": round(awp * 100, 1),
+                    "Category": cat, "Cat Win%": round(awp * 100, 1),
                     "My Median": round(med_me, 2), "Opp Median": round(med_opp, 2),
                     "Edge": round(med_me - med_opp, 2), "Assessment": strength,
                 })
-            win_df = pd.DataFrame(win_pct_rows).sort_values("Win%", ascending=False)
+            win_df = pd.DataFrame(win_pct_rows).sort_values("Cat Win%", ascending=False)
             def _color_win(val):
                 try:
                     v = float(val)
@@ -3408,17 +3408,17 @@ elif page == "🎲 Monte Carlo Sim":
                     return "color:#FF4B4B; font-weight:bold"
                 except: return ""
             st.dataframe(
-                win_df.style.map(_color_win, subset=["Win%"]).format({"Win%": "{:.1f}%"}),
+                win_df.style.map(_color_win, subset=["Cat Win%"]).format({"Cat Win%": "{:.1f}%"}),
                 use_container_width=True, hide_index=True)
 
             st.markdown("---")
             st.markdown("#### 🕸️ Category Win% Radar")
-            cats_r = win_df["Category"].tolist(); probs_r = win_df["Win%"].tolist()
+            cats_r = win_df["Category"].tolist(); probs_r = win_df["Cat Win%"].tolist()
             fig_radar = go.Figure()
             fig_radar.add_trace(go.Scatterpolar(
                 r=probs_r + [probs_r[0]], theta=cats_r + [cats_r[0]],
                 fill="toself", line_color="#4fc3f7",
-                fillcolor="rgba(79,195,247,0.15)", name="Win%"))
+                fillcolor="rgba(79,195,247,0.15)", name="Cat Win%"))
             fig_radar.add_trace(go.Scatterpolar(
                 r=[50]*(len(cats_r)+1), theta=cats_r + [cats_r[0]],
                 mode="lines", line=dict(dash="dash", color="gray", width=1), name="50% line"))
@@ -3427,7 +3427,7 @@ elif page == "🎲 Monte Carlo Sim":
                 template="plotly_dark", height=420,
                 legend=dict(orientation="h", y=-0.1), margin=dict(l=40,r=40,t=40,b=60))
             st.plotly_chart(fig_radar, use_container_width=True)
-            exp_wins = sum(r["Win%"]/100 for _,r in win_df.iterrows())
+            exp_wins = sum(r["Cat Win%"]/100 for _,r in win_df.iterrows())
             st.metric("📊 Expected Category Wins per matchup", f"{exp_wins:.2f} / 9",
                 f"{'above' if exp_wins > 4.5 else 'below'} .500")
 
@@ -4950,7 +4950,7 @@ if page == "🏆 My Yahoo League":
                                 "W":     rec.get("wins","?"),
                                 "L":     rec.get("losses","?"),
                                 "T":     rec.get("ties","?"),
-                                "Win%":  rec.get("percentage","?"),
+                                "Cat Win%":  rec.get("percentage","?"),
                                 "Pts For":   tstats.get("points_for",""),
                                 "Pts Agnst": tstats.get("points_against",""),
                             })
@@ -5511,125 +5511,91 @@ if page == "🏆 My Yahoo League":
                     # SEASON STANDINGS: Win% = (MatchupW + MatchupT×0.5) / TotalMatchups
                     #   - Playoff tiebreaker: most TOTAL CATEGORY WINS (not matchup W)
                     #
-                    # Per-team season arrays
-                    team_matchup_w   = {t: np.zeros(N_SIM_LS, dtype=int) for t in team_names}
-                    team_matchup_l   = {t: np.zeros(N_SIM_LS, dtype=int) for t in team_names}
-                    team_matchup_t   = {t: np.zeros(N_SIM_LS, dtype=int) for t in team_names}
-                    team_cat_w_total = {t: np.zeros(N_SIM_LS, dtype=int) for t in team_names}
+                    # ── Cumulative category W/L/T across all 20 weeks × 10 cats ──
+                    # Each category each week is independently W/L/T.
+                    # Total slots = 20 weeks × 10 cats = 200.
+                    # Great season ≈ 120W (.600), average = 100W (.500).
+                    # Standings sorted by total cat W (ties broken by cat win%).
+                    #
+                    # Yahoo H2H Each-Category confirmed rules:
+                    #   - Win cat  → your cat W count +1
+                    #   - Lose cat → your cat L count +1
+                    #   - Exact tie → your cat T count +1 (Yahoo resolves via full decimal)
+                    #   - Season record = cumulative W-L-T across all 200 slots
+                    #   - Win% = (W + T×0.5) / 200
 
-                    # Track actual matchups played per team per sim
-                    # (handles odd team counts — one team gets BYE each week)
-                    team_matchups_played = {t: np.zeros(N_SIM_LS, dtype=int) for t in team_names}
+                    TOTAL_SLOTS = REG_WEEKS_LS * len(cats_ls)  # 200
+
+                    # Per-team cumulative cat W/L/T arrays [N_SIM_LS]
+                    team_cat_w = {t: np.zeros(N_SIM_LS, dtype=int) for t in team_names}
+                    team_cat_l = {t: np.zeros(N_SIM_LS, dtype=int) for t in team_names}
+                    team_cat_t = {t: np.zeros(N_SIM_LS, dtype=int) for t in team_names}
 
                     for sim in range(N_SIM_LS):
                         for wk in range(REG_WEEKS_LS):
                             shuffled = np.random.permutation(team_names)
-                            # Pair teams: (0,1), (2,3), (4,5)...
-                            # If odd number of teams, last team in shuffled gets a BYE
+                            # Pair teams; odd team count → last gets BYE (no cats scored)
                             for i in range(0, len(shuffled) - 1, 2):
                                 t1, t2 = shuffled[i], shuffled[i+1]
                                 if t1 not in team_weekly or t2 not in team_weekly:
                                     continue
-                                team_matchups_played[t1][sim] += 1
-                                team_matchups_played[t2][sim] += 1
-
-                                # Count category W/L/T for this matchup
-                                t1_cats_won = 0
-                                t2_cats_won = 0
-
                                 for cat in cats_ls:
                                     if cat not in team_weekly[t1] or cat not in team_weekly[t2]:
                                         continue
-
                                     tw1 = team_weekly[t1][cat]
                                     tw2 = team_weekly[t2][cat]
-                                    si1 = sim % tw1.shape[0]
-                                    si2 = sim % tw2.shape[0]
-                                    wi  = wk  % tw1.shape[1]
-                                    v1  = float(tw1[si1, wi])
-                                    v2  = float(tw2[si2, wi])
-
+                                    v1  = float(tw1[sim % tw1.shape[0], wk % tw1.shape[1]])
+                                    v2  = float(tw2[sim % tw2.shape[0], wk % tw2.shape[1]])
                                     lower = cat in MC_LOWER
-
-                                    # Category tie: exact equality (rare for counting stats,
-                                    # more common for rate stats like AVG/ERA/WHIP)
-                                    # Yahoo resolves via full decimal — we treat as tie in sim
                                     if lower:
-                                        if   v1 < v2: t1_cats_won += 1; team_cat_w_total[t1][sim] += 1
-                                        elif v2 < v1: t2_cats_won += 1; team_cat_w_total[t2][sim] += 1
-                                        # else: tie — neither gets a category win
+                                        if   v1 < v2: team_cat_w[t1][sim]+=1; team_cat_l[t2][sim]+=1
+                                        elif v2 < v1: team_cat_w[t2][sim]+=1; team_cat_l[t1][sim]+=1
+                                        else:         team_cat_t[t1][sim]+=1; team_cat_t[t2][sim]+=1
                                     else:
-                                        if   v1 > v2: t1_cats_won += 1; team_cat_w_total[t1][sim] += 1
-                                        elif v2 > v1: t2_cats_won += 1; team_cat_w_total[t2][sim] += 1
-                                        # else: tie category
-
-                                # Weekly matchup result
-                                # 5-5 (or equal after ties) = matchup TIE
-                                if t1_cats_won > t2_cats_won:
-                                    team_matchup_w[t1][sim] += 1
-                                    team_matchup_l[t2][sim] += 1
-                                elif t2_cats_won > t1_cats_won:
-                                    team_matchup_w[t2][sim] += 1
-                                    team_matchup_l[t1][sim] += 1
-                                else:
-                                    # Tied matchup (5-5 most common, but could be 4-4 or 3-3
-                                    # if many category ties) — both get a T
-                                    team_matchup_t[t1][sim] += 1
-                                    team_matchup_t[t2][sim] += 1
+                                        if   v1 > v2: team_cat_w[t1][sim]+=1; team_cat_l[t2][sim]+=1
+                                        elif v2 > v1: team_cat_w[t2][sim]+=1; team_cat_l[t1][sim]+=1
+                                        else:         team_cat_t[t1][sim]+=1; team_cat_t[t2][sim]+=1
 
                     prog_ls.empty()
 
-                    # Yahoo win% formula: (W + T*0.5) / total_matchups_played
+                    # Build standings — sort by median cat W, tiebreak by cat win%
                     standings_rows = []
                     for tname in team_names:
-                        mw  = team_matchup_w[tname]
-                        ml  = team_matchup_l[tname]
-                        mt  = team_matchup_t[tname]
-                        cw  = team_cat_w_total[tname]
-                        mp  = team_matchups_played[tname]  # actual games played
+                        cw  = team_cat_w[tname]
+                        cl  = team_cat_l[tname]
+                        ct  = team_cat_t[tname]
+                        tot = cw + cl + ct  # total slots played (≤200, less if BYE weeks)
 
-                        # Win% = (W + T*0.5) / games_played — avoids BYE distortion
-                        denom = np.where(mp > 0, mp, 1)  # avoid div/0
-                        win_pct_arr = (mw + mt * 0.5) / denom * 100
+                        win_pct_arr = np.where(tot>0, (cw + ct*0.5)/tot*100, 50.0)
 
-                        med_w    = int(np.median(mw))
-                        med_l    = int(np.median(ml))
-                        med_t    = int(np.median(mt))
-                        med_mp   = int(np.median(mp))  # should be 20 for even leagues
-                        med_pct  = round(float(np.median(win_pct_arr)), 1)
-                        p10_pct  = round(float(np.percentile(win_pct_arr, 10)), 1)
-                        p90_pct  = round(float(np.percentile(win_pct_arr, 90)), 1)
-                        med_cats = int(np.median(cw))
+                        med_w   = int(np.median(cw))
+                        med_l   = int(np.median(cl))
+                        med_t   = int(np.median(ct))
+                        med_pct = round(float(np.median(win_pct_arr)), 1)
+                        p10_pct = round(float(np.percentile(win_pct_arr, 10)), 1)
+                        p90_pct = round(float(np.percentile(win_pct_arr, 90)), 1)
 
-                        is_me  = next((t["is_me"] for t in all_teams_ls if t["name"]==tname), False)
-                        # Verify W+L+T = total matchups played
-                        wlt_sum = med_w + med_l + med_t
+                        is_me = next((t["is_me"] for t in all_teams_ls if t["name"]==tname), False)
                         standings_rows.append({
-                            "Team":         ("🟢 " if is_me else "") + tname,
-                            "W-L-T":        f"{med_w}-{med_l}-{med_t}",
-                            "Games":        wlt_sum,
-                            "Win%":         med_pct,
-                            "Win% Range":   f"{p10_pct}–{p90_pct}%",
-                            "Cat Wins":     med_cats,
-                            "Playoff %":    0,
+                            "Team":        ("🟢 " if is_me else "") + tname,
+                            "Cat W-L-T":   f"{med_w}-{med_l}-{med_t}",
+                            "Cat Win%":    med_pct,
+                            "Range":       f"{p10_pct}–{p90_pct}%",
+                            "Playoff %":   0,
                         })
 
-                    # Playoff probabilities: top N teams by win% per sim
-                    # Tiebreaker: total category wins (per Yahoo rules)
+                    # Playoff % — top 4 by cat W per sim, tiebreak by cat win%
                     PLAYOFF_SPOTS = 4
                     playoff_counts = {t: 0 for t in team_names}
                     for sim in range(N_SIM_LS):
-                        sim_records = []
+                        sim_recs = []
                         for t in team_names:
-                            mw_  = team_matchup_w[t][sim]
-                            mt_  = team_matchup_t[t][sim]
-                            mp_  = max(1, team_matchups_played[t][sim])
-                            wpc  = (mw_ + mt_ * 0.5) / mp_  # true win%
-                            cw_  = team_cat_w_total[t][sim]
-                            sim_records.append((t, wpc, cw_))
-                        # Sort by win%, then category wins as tiebreaker
-                        sim_records.sort(key=lambda x: (x[1], x[2]), reverse=True)
-                        for t, _, _ in sim_records[:PLAYOFF_SPOTS]:
+                            cw_ = team_cat_w[t][sim]
+                            tot_= max(1, team_cat_w[t][sim]+team_cat_l[t][sim]+team_cat_t[t][sim])
+                            wpc_= (cw_ + team_cat_t[t][sim]*0.5) / tot_
+                            sim_recs.append((t, cw_, wpc_))
+                        sim_recs.sort(key=lambda x: (x[1], x[2]), reverse=True)
+                        for t, _, _ in sim_recs[:PLAYOFF_SPOTS]:
                             playoff_counts[t] += 1
 
                     for row in standings_rows:
@@ -5637,7 +5603,7 @@ if page == "🏆 My Yahoo League":
                         row["Playoff %"] = round(playoff_counts.get(tname_clean, 0) / N_SIM_LS * 100, 1)
 
                     # Sort by median win%
-                    standings_rows.sort(key=lambda x: -x["Win%"])
+                    standings_rows.sort(key=lambda x: -x["Cat Win%"])
 
                     # Category strength table
                     cat_strength = {}
@@ -5689,23 +5655,21 @@ if page == "🏆 My Yahoo League":
                             return "color:#FF4B4B"
                         except: return ""
 
-                    pct_cols = [c for c in ["Win%","Playoff %"] if c in sdf.columns]
                     styled_sdf = sdf.style.map(_team_color, subset=["Team"])
-                    if "Win%" in sdf.columns:
-                        styled_sdf = styled_sdf.map(_winpct_color, subset=["Win%"])
+                    if "Cat Win%" in sdf.columns:
+                        styled_sdf = styled_sdf.map(_winpct_color, subset=["Cat Win%"])
                     if "Playoff %" in sdf.columns:
                         styled_sdf = styled_sdf.map(_playoff_color, subset=["Playoff %"])
                     fmt_sdf = {}
-                    if "Win%" in sdf.columns:      fmt_sdf["Win%"]      = "{:.1f}%"
+                    if "Cat Win%" in sdf.columns:      fmt_sdf["Cat Win%"]      = "{:.1f}%"
                     if "Playoff %" in sdf.columns: fmt_sdf["Playoff %"] = "{:.1f}%"
                     if fmt_sdf:
                         styled_sdf = styled_sdf.format(fmt_sdf)
                     st.dataframe(styled_sdf, use_container_width=True, hide_index=True)
                     st.caption(
-                        "**W-L-T** = matchup record (win/lose/tie the week). "
-                        "**Win%** = (W + T×0.5) / weeks — the official Yahoo standings formula. "
-                        "**Cat Wins** = total individual category wins (tiebreaker for playoff seeding). "
-                        "A 5-5 weekly matchup = TIE (both teams get T, counted as 0.5 wins)."
+                        "**Cat W-L-T** = cumulative category wins-losses-ties across all 20 weeks × 10 cats = 200 total slots. "
+                        "**Cat Win%** = (CatW + CatT×0.5) / 200. "
+                        "Great season ≈ 120W (60%). Average = 100W (50%)."
                     )
 
                     # Category strength heatmap
@@ -5743,41 +5707,40 @@ if page == "🏆 My Yahoo League":
                             # - Count category W/L/T per week
                             # - Convert to matchup W/L/T (5-5 = matchup tie)
                             # - Win% = (matchupW + matchupT*0.5) / REG_WEEKS_LS
-                            my_mw  = np.zeros(N_OPP_SIM, dtype=int)
-                            my_ml  = np.zeros(N_OPP_SIM, dtype=int)
-                            my_mt  = np.zeros(N_OPP_SIM, dtype=int)
+                            # Cumulative cat W/L/T vs this specific opponent (20wk × 10cat)
+                            my_cw  = np.zeros(N_OPP_SIM, dtype=int)
+                            my_cl  = np.zeros(N_OPP_SIM, dtype=int)
+                            my_ct  = np.zeros(N_OPP_SIM, dtype=int)
 
                             for sim_o in range(N_OPP_SIM):
                                 for wk_o in range(REG_WEEKS_LS):
-                                    my_cats  = 0
-                                    opp_cats = 0
                                     for cat in cats_ls:
                                         if cat not in team_weekly.get(my_name_ls,{}) or                                            cat not in team_weekly.get(opp_name_ls,{}): continue
-                                        tw_me  = team_weekly[my_name_ls][cat]
-                                        tw_op  = team_weekly[opp_name_ls][cat]
-                                        v1 = float(tw_me [sim_o % tw_me.shape[0],  wk_o % tw_me.shape[1]])
-                                        v2 = float(tw_op [sim_o % tw_op.shape[0],  wk_o % tw_op.shape[1]])
+                                        tw_me = team_weekly[my_name_ls][cat]
+                                        tw_op = team_weekly[opp_name_ls][cat]
+                                        v1 = float(tw_me[sim_o%tw_me.shape[0], wk_o%tw_me.shape[1]])
+                                        v2 = float(tw_op[sim_o%tw_op.shape[0], wk_o%tw_op.shape[1]])
                                         lower = cat in MC_LOWER
                                         if lower:
-                                            if v1 < v2: my_cats  += 1
-                                            elif v2 < v1: opp_cats += 1
+                                            if   v1 < v2: my_cw[sim_o]+=1
+                                            elif v2 < v1: my_cl[sim_o]+=1
+                                            else:         my_ct[sim_o]+=1
                                         else:
-                                            if v1 > v2: my_cats  += 1
-                                            elif v2 > v1: opp_cats += 1
-                                    if my_cats > opp_cats:   my_mw[sim_o] += 1
-                                    elif opp_cats > my_cats: my_ml[sim_o] += 1
-                                    else:                     my_mt[sim_o] += 1
+                                            if   v1 > v2: my_cw[sim_o]+=1
+                                            elif v2 > v1: my_cl[sim_o]+=1
+                                            else:         my_ct[sim_o]+=1
 
-                            # Win% per sim, then take median
-                            win_pct_sims = (my_mw + my_mt * 0.5) / REG_WEEKS_LS * 100
-                            med_w = int(np.median(my_mw))
-                            med_l = int(np.median(my_ml))
-                            med_t = int(np.median(my_mt))
+                            tot_opp = my_cw + my_cl + my_ct
+                            win_pct_sims = np.where(tot_opp>0,
+                                (my_cw + my_ct*0.5)/tot_opp*100, 50.0)
+                            med_w = int(np.median(my_cw))
+                            med_l = int(np.median(my_cl))
+                            med_t = int(np.median(my_ct))
                             win_pct_vs = float(np.median(win_pct_sims))
                             opp_records.append({
                                 "Opponent":  opp_name_ls,
-                                "Record":    f"{med_w}-{med_l}-{med_t}",
-                                "Win%":      round(win_pct_vs, 1),
+                                "Cat W-L-T": f"{med_w}-{med_l}-{med_t}",
+                                "Cat Win%":      round(win_pct_vs, 1),
                                 "Result":    ("🔥 Easy W" if win_pct_vs >= 65 else
                                               "✅ Likely W" if win_pct_vs >= 55 else
                                               "⚖️ Toss-up" if win_pct_vs >= 45 else
@@ -5785,7 +5748,7 @@ if page == "🏆 My Yahoo League":
                                               "🚨 Hard L"),
                             })
 
-                        opp_records.sort(key=lambda x: -x["My Win %"])
+                        opp_records.sort(key=lambda x: -x["Cat Win%"])
                         odf = pd.DataFrame(opp_records)
 
                         def _opp_result_color(val):
@@ -5805,16 +5768,17 @@ if page == "🏆 My Yahoo League":
                                 return "color:#FF4B4B"
                             except: return ""
 
+                        odf_cols = [c for c in ["Opponent","Cat W-L-T","Cat Win%","Result"] if c in odf.columns]
                         st.dataframe(
-                            odf.style
-                               .map(_owin_color,       subset=["Win%"])
+                            odf[odf_cols].style
+                               .map(_owin_color,       subset=["Cat Win%"])
                                .map(_opp_result_color, subset=["Result"])
-                               .format({"Win%": "{:.1f}%"}),
+                               .format({"Cat Win%": "{:.1f}%"}),
                             use_container_width=True, hide_index=True
                         )
                         st.caption(
-                            "Record = Matchup W-L-T over 20 weeks. "
-                            "Win% = (W + T×0.5)/20. A 5-5 week = Tie (T) for both teams."
+                            "Cat W-L-T = cumulative category wins-losses-ties over all 20 weeks × 10 cats = 200 slots. "
+                            "Cat Win% = (CatW + CatT×0.5) / 200. Great ≈ 120W (60%), Average = 100W (50%)."
                         )
 
                     if st.button("🔄 Re-run Simulation", key="btn_lsim_rerun"):
