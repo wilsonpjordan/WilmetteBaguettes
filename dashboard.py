@@ -4,7 +4,7 @@
   Single-file Streamlit app — no other files needed.
 
   HOW TO RUN:
-    1. pip install streamlit pandas numpy plotly pybaseball scipy
+    1. pip install streamlit pandas numpy plotly pybaseball scipy MLB-StatsAPI
     2. streamlit run dashboard.py
 ================================================================
 """
@@ -4416,8 +4416,8 @@ if page == "🏆 My Yahoo League":
                            })
                        ])
 
-            ytab_roster, ytab_stand, ytab_matchup, ytab_stream, ytab_leaguesim, ytab_matchupsim = st.tabs([
-                "👥 My Roster", "📊 Standings", "⚔️ This Week", "🌊 Streamers",
+            ytab_roster, ytab_daily, ytab_stand, ytab_matchup, ytab_stream, ytab_leaguesim, ytab_matchupsim = st.tabs([
+                "👥 My Roster", "📅 Daily Matchups", "📊 Standings", "⚔️ This Week", "🌊 Streamers",
                 "🏆 League Season Sim", "⚔️ Matchup Sim"
             ])
 
@@ -4522,6 +4522,369 @@ if page == "🏆 My Yahoo League":
                     except Exception as e:
                         st.warning(f"Could not parse roster: {e}")
                         st.json(r_data)
+
+            # ── DAILY MATCHUPS ────────────────────────────────
+            with ytab_daily:
+                st.markdown("#### 📅 Daily & Weekly Matchup Analysis")
+                st.caption(
+                    "Uses MLB Stats API (free, no auth) to fetch today's schedule, probable pitchers, "
+                    "and lineups. Cross-references with your roster for actionable start/sit guidance."
+                )
+
+                # ── MLB Stats API helpers (no auth required) ──────
+                MLB_API = "https://statsapi.mlb.com/api/v1"
+
+                @st.cache_data(ttl=3600, show_spinner=False)
+                def _mlb_schedule(date_str: str) -> list:
+                    """Fetch today's MLB schedule with probable pitchers + lineups."""
+                    import requests as _rs
+                    try:
+                        r = _rs.get(
+                            f"{MLB_API}/schedule",
+                            params={
+                                "sportId": 1,
+                                "date": date_str,
+                                "hydrate": "probablePitcher,lineups,weather,venue",
+                                "fields": "dates,games,gamePk,gameDate,status,teams,probablePitcher,"
+                                          "lineups,weather,venue,name,id,fullName,pitchHand,batSide"
+                            },
+                            timeout=15
+                        )
+                        if r.status_code != 200:
+                            return []
+                        dates = r.json().get("dates", [])
+                        if not dates:
+                            return []
+                        return dates[0].get("games", [])
+                    except Exception:
+                        return []
+
+                @st.cache_data(ttl=86400, show_spinner=False)
+                def _mlb_player_stats(player_id: int, stat_type: str = "career") -> dict:
+                    """Fetch career or season stats for a player from MLB Stats API."""
+                    import requests as _rs
+                    try:
+                        r = _rs.get(
+                            f"{MLB_API}/people/{player_id}/stats",
+                            params={"stats": stat_type, "group": "hitting,pitching",
+                                    "sportId": 1},
+                            timeout=10
+                        )
+                        if r.status_code != 200:
+                            return {}
+                        stats_raw = r.json().get("stats", [])
+                        result = {}
+                        for group in stats_raw:
+                            splits = group.get("splits", [])
+                            if splits:
+                                result[group.get("group",{}).get("displayName","")] =                                     splits[-1].get("stat", {})
+                        return result
+                    except Exception:
+                        return {}
+
+                @st.cache_data(ttl=86400, show_spinner=False)
+                def _mlb_lookup_player(name: str) -> int | None:
+                    """Look up MLB player ID by name."""
+                    import requests as _rs
+                    try:
+                        r = _rs.get(
+                            f"{MLB_API}/people/search",
+                            params={"names": name, "sportId": 1},
+                            timeout=10
+                        )
+                        if r.status_code == 200:
+                            people = r.json().get("people", [])
+                            if people:
+                                return people[0]["id"]
+                    except Exception:
+                        pass
+                    return None
+
+                @st.cache_data(ttl=3600, show_spinner=False)
+                def _mlb_splits_vs_hand(player_id: int, hand: str) -> dict:
+                    """Get batter's career stats vs LHP or RHP."""
+                    import requests as _rs
+                    try:
+                        r = _rs.get(
+                            f"{MLB_API}/people/{player_id}/stats",
+                            params={"stats": "careerStatSplits",
+                                    "group": "hitting",
+                                    "sitCodes": f"v{'L' if hand=='L' else 'R'}",
+                                    "sportId": 1},
+                            timeout=10
+                        )
+                        if r.status_code == 200:
+                            splits = r.json().get("stats", [{}])[0].get("splits", [])
+                            if splits:
+                                return splits[0].get("stat", {})
+                    except Exception:
+                        pass
+                    return {}
+
+                @st.cache_data(ttl=3600, show_spinner=False)
+                def _park_factors() -> dict:
+                    """Hardcoded 2025 park factors (HR factor) — updated annually."""
+                    return {
+                        "COL": 1.22, "CIN": 1.12, "TEX": 1.10, "PHI": 1.09,
+                        "BAL": 1.08, "BOS": 1.07, "NYY": 1.06, "HOU": 1.04,
+                        "CHC": 1.03, "ATL": 1.02, "MIL": 1.01, "LAD": 1.00,
+                        "NYM": 0.99, "TOR": 0.99, "MIN": 0.98, "STL": 0.97,
+                        "DET": 0.97, "CLE": 0.96, "SEA": 0.95, "SF":  0.94,
+                        "ARI": 0.93, "WSH": 0.93, "MIA": 0.92, "TB":  0.91,
+                        "OAK": 0.91, "SD":  0.90, "PIT": 0.90, "KC":  0.89,
+                        "LAA": 0.88, "CWS": 0.88,
+                    }
+
+                # ── Date picker ───────────────────────────────────
+                import datetime
+                today = datetime.date.today()
+                # Week range Mon-Sun
+                week_start = today - datetime.timedelta(days=today.weekday())
+                week_end   = week_start + datetime.timedelta(days=6)
+
+                dcol1, dcol2 = st.columns(2)
+                sel_date = dcol1.date_input("Select date", value=today,
+                                             min_value=today - datetime.timedelta(days=1),
+                                             max_value=today + datetime.timedelta(days=6),
+                                             key="daily_date_sel")
+                view_mode = dcol2.radio("View", ["My Roster only","All teams"],
+                                         horizontal=True, key="daily_view_mode",
+                                         label_visibility="collapsed")
+
+                date_str = sel_date.strftime("%Y-%m-%d")
+
+                if st.button("🔄 Load Matchups", key="btn_load_daily", type="primary"):
+                    st.session_state.pop(f"daily_{date_str}", None)
+
+                cache_key = f"daily_{date_str}"
+                if cache_key not in st.session_state:
+                    with st.spinner(f"Fetching MLB schedule for {date_str}..."):
+                        games = _mlb_schedule(date_str)
+                        st.session_state[cache_key] = games
+                else:
+                    games = st.session_state[cache_key]
+
+                if not games:
+                    st.info(f"No games found for {date_str}. The MLB season starts March 27, 2026. "
+                            "Try selecting a date on or after Opening Day.")
+                else:
+                    # Build team → game mapping
+                    team_games = {}  # abbr → game info
+                    for g in games:
+                        away = g.get("teams",{}).get("away",{})
+                        home = g.get("teams",{}).get("home",{})
+                        away_abbr = away.get("team",{}).get("abbreviation","")
+                        home_abbr = home.get("team",{}).get("abbreviation","")
+                        away_pp = away.get("probablePitcher",{})
+                        home_pp = home.get("probablePitcher",{})
+                        weather  = g.get("weather",{})
+                        venue    = g.get("venue",{}).get("name","")
+                        park_key = home_abbr
+                        park_fac = _park_factors().get(park_key, 1.00)
+                        game_time = g.get("gameDate","")[:16].replace("T"," ")
+
+                        game_info = {
+                            "away": away_abbr, "home": home_abbr,
+                            "away_pp": away_pp, "home_pp": home_pp,
+                            "weather": weather, "venue": venue,
+                            "park_factor": park_fac,
+                            "game_time": game_time,
+                            "game_pk": g.get("gamePk",""),
+                        }
+                        team_games[away_abbr] = {**game_info, "my_side":"away",
+                                                  "opp_abbr": home_abbr,
+                                                  "opp_pp": home_pp}
+                        team_games[home_abbr] = {**game_info, "my_side":"home",
+                                                  "opp_abbr": away_abbr,
+                                                  "opp_pp": away_pp}
+
+                    # Get my roster players + their teams
+                    roster_data_d = st.session_state.get("yahoo_roster_data",{})
+                    roster_players_d = []
+                    if "error" not in roster_data_d and roster_data_d:
+                        try:
+                            entries_d = roster_data_d["fantasy_content"]["team"][1]["roster"]["0"]["players"]
+                            for k, v in entries_d.items():
+                                if k == "count": continue
+                                p0 = v["player"][0]
+                                name_ = next((x["name"]["full"] for x in p0 if isinstance(x,dict) and "name" in x), "?")
+                                pos_  = next((x["display_position"] for x in p0 if isinstance(x,dict) and "display_position" in x), "")
+                                team_ = next((x["editorial_team_abbr"] for x in p0 if isinstance(x,dict) and "editorial_team_abbr" in x), "")
+                                mlb_id = next((x.get("player_id") for x in p0 if isinstance(x,dict) and "player_id" in x), None)
+                                is_hit_ = any(x in pos_ for x in ["1B","2B","3B","SS","OF","C","Util","DH"])
+                                roster_players_d.append({
+                                    "name": name_, "pos": pos_, "team": team_,
+                                    "mlb_id": mlb_id, "is_hitter": is_hit_
+                                })
+                        except Exception:
+                            pass
+
+                    # Filter to roster-relevant teams if needed
+                    my_teams = {p["team"] for p in roster_players_d}
+
+                    if view_mode == "My Roster only" and not roster_players_d:
+                        st.warning("Load your roster first (👥 My Roster tab) to see roster-filtered matchups.")
+
+                    # Display games
+                    park_factors = _park_factors()
+                    st.markdown(f"**{len(games)} games on {date_str}**")
+
+                    for g in games:
+                        away_t  = g.get("teams",{}).get("away",{})
+                        home_t  = g.get("teams",{}).get("home",{})
+                        away_ab = away_t.get("team",{}).get("abbreviation","?")
+                        home_ab = home_t.get("team",{}).get("abbreviation","?")
+
+                        # Filter by roster teams
+                        if view_mode == "My Roster only" and my_teams:
+                            if away_ab not in my_teams and home_ab not in my_teams:
+                                continue
+
+                        away_pp  = away_t.get("probablePitcher",{})
+                        home_pp  = home_t.get("probablePitcher",{})
+                        weather  = g.get("weather",{})
+                        venue    = g.get("venue",{}).get("name","?")
+                        park_fac = park_factors.get(home_ab, 1.00)
+                        gtime    = g.get("gameDate","")[:16].replace("T"," ") + " UTC"
+                        status   = g.get("status",{}).get("detailedState","Scheduled")
+
+                        away_pp_str = (f"{away_pp.get('fullName','TBD')} "
+                                       f"({'R' if away_pp.get('pitchHand',{}).get('code','?')=='R' else 'L'}HP)"
+                                       ) if away_pp else "TBD"
+                        home_pp_str = (f"{home_pp.get('fullName','TBD')} "
+                                       f"({'R' if home_pp.get('pitchHand',{}).get('code','?')=='R' else 'L'}HP)"
+                                       ) if home_pp else "TBD"
+
+                        wind_str = ""
+                        if weather:
+                            wind_str = (f"🌡️ {weather.get('temp','?')}°F  "
+                                       f"💨 {weather.get('wind','')}")
+
+                        park_str = (f"🏟️ Park factor: **{park_fac:.2f}x** "
+                                    f"{'(hitter-friendly)' if park_fac>1.02 else '(pitcher-friendly)' if park_fac<0.97 else '(neutral)'}")
+
+                        with st.expander(
+                            f"**{away_ab} @ {home_ab}** — {gtime}  |  {status}",
+                            expanded=(away_ab in my_teams or home_ab in my_teams)
+                        ):
+                            gc1, gc2, gc3 = st.columns(3)
+                            gc1.markdown(f"**Away SP:** {away_pp_str}")
+                            gc2.markdown(f"**Home SP:** {home_pp_str}")
+                            gc3.markdown(park_str)
+                            if wind_str:
+                                st.caption(wind_str + f"  |  📍 {venue}")
+
+                            # My players in this game
+                            my_in_game = [p for p in roster_players_d
+                                          if p["team"] in [away_ab, home_ab]]
+                            if my_in_game:
+                                st.markdown("**Your players in this game:**")
+                                matchup_rows = []
+                                for p in my_in_game:
+                                    # Determine opposing pitcher
+                                    opp_pp = home_pp if p["team"] == away_ab else away_pp
+                                    opp_hand = opp_pp.get("pitchHand",{}).get("code","?") if opp_pp else "?"
+
+                                    # Get splits vs pitcher hand from FanGraphs data
+                                    p_hand_stat = "—"
+                                    if p["is_hitter"]:
+                                        bat_r = bat_rec[bat_rec["Name"].str.lower() == p["name"].lower()]
+                                        if not bat_r.empty:
+                                            r_ = bat_r.iloc[0]
+                                            # Use wRC+ or AVG as proxy
+                                            avg_ = round(float(r_.get("AVG",0)),3) if pd.notna(r_.get("AVG")) else "—"
+                                            obp_ = round(float(r_.get("OBP",0)),3) if pd.notna(r_.get("OBP")) else "—"
+                                            p_hand_stat = f"AVG {avg_} OBP {obp_}"
+                                        park_adj = "↑" if park_fac > 1.02 else "↓" if park_fac < 0.97 else "→"
+                                        matchup_rows.append({
+                                            "Player": p["name"],
+                                            "Pos": p["pos"],
+                                            "Team": p["team"],
+                                            "Opp SP": opp_pp.get("fullName","TBD") if opp_pp else "TBD",
+                                            "SP Hand": opp_hand,
+                                            "Career Stats": p_hand_stat,
+                                            "Park": f"{park_fac:.2f}x {park_adj}",
+                                            "Rec": ("▶️ Start" if opp_hand in ["L"] and
+                                                    any(x in p["pos"] for x in ["1B","2B","3B","SS","OF","C"])
+                                                    else "✅ Start" if opp_hand == "R"
+                                                    else "🔄 Matchup dep."),
+                                        })
+                                    else:
+                                        pit_r = pit_rec[pit_rec["Name"].str.lower() == p["name"].lower()]
+                                        era_  = round(float(pit_r.iloc[0].get("ERA",0)),2) if not pit_r.empty and pd.notna(pit_r.iloc[0].get("ERA")) else "—"
+                                        whip_ = round(float(pit_r.iloc[0].get("WHIP",0)),3) if not pit_r.empty and pd.notna(pit_r.iloc[0].get("WHIP")) else "—"
+                                        # Opposing team lineup quality
+                                        opp_team_ab = home_ab if p["team"] == away_ab else away_ab
+                                        matchup_rows.append({
+                                            "Player": p["name"],
+                                            "Pos": p["pos"],
+                                            "Team": p["team"],
+                                            "vs": f"{opp_team_ab} lineup",
+                                            "ERA": era_,
+                                            "WHIP": whip_,
+                                            "Park": f"{park_fac:.2f}x",
+                                            "Rec": ("✅ Stream" if isinstance(era_,float) and era_<3.80
+                                                    else "🔄 Spot start" if isinstance(era_,float) and era_<4.50
+                                                    else "⚠️ Use caution"),
+                                        })
+
+                                if matchup_rows:
+                                    mdf = pd.DataFrame(matchup_rows)
+                                    def _rec_c(val):
+                                        v = str(val)
+                                        if "Start" in v or "Stream" in v: return "color:#21C354"
+                                        if "caution" in v: return "color:#FF4B4B"
+                                        return "color:#FFA500"
+                                    st.dataframe(
+                                        mdf.style.map(_rec_c, subset=["Rec"]),
+                                        use_container_width=True, hide_index=True
+                                    )
+
+                    # ── Weekly starts summary ──────────────────────────
+                    if roster_players_d:
+                        st.markdown("---")
+                        st.markdown("#### 📆 Weekly Start Count (Mon–Sun)")
+                        st.caption(f"Week of {week_start.strftime('%b %d')} – {week_end.strftime('%b %d, %Y')}")
+
+                        with st.spinner("Counting starts this week..."):
+                            # Count games per team this week
+                            team_game_count: dict[str,int] = {}
+                            for d in range(7):
+                                day_d = (week_start + datetime.timedelta(days=d)).strftime("%Y-%m-%d")
+                                day_games = _mlb_schedule(day_d)
+                                for gm in day_games:
+                                    for side in ["away","home"]:
+                                        ab = gm.get("teams",{}).get(side,{}).get("team",{}).get("abbreviation","")
+                                        if ab:
+                                            team_game_count[ab] = team_game_count.get(ab,0) + 1
+
+                        wk_rows = []
+                        for p in roster_players_d:
+                            games_this_wk = team_game_count.get(p["team"], 0)
+                            wk_rows.append({
+                                "Player":   p["name"],
+                                "Pos":      p["pos"],
+                                "Team":     p["team"],
+                                "Games/Wk": games_this_wk,
+                                "Starts":   games_this_wk if p["is_hitter"] else
+                                            (2 if games_this_wk >= 7 else 1 if games_this_wk >= 4 else 0),
+                                "Value":    ("🔥 High" if games_this_wk >= 7 else
+                                             "✅ Good" if games_this_wk >= 6 else
+                                             "➡️ Avg"  if games_this_wk >= 5 else
+                                             "⚠️ Low"),
+                            })
+
+                        wdf = pd.DataFrame(wk_rows).sort_values("Games/Wk", ascending=False)
+                        def _wk_color(val):
+                            v = str(val)
+                            if "High" in v: return "color:#21C354;font-weight:bold"
+                            if "Good" in v: return "color:#21C354"
+                            if "Avg"  in v: return "color:#FFA500"
+                            return "color:#FF4B4B"
+                        st.dataframe(
+                            wdf.style.map(_wk_color, subset=["Value"]),
+                            use_container_width=True, hide_index=True
+                        )
 
             # ── STANDINGS ─────────────────────────────────────
             with ytab_stand:
@@ -4689,154 +5052,257 @@ if page == "🏆 My Yahoo League":
             with ytab_stream:
                 st.markdown("#### 🌊 Streaming Recommendations")
                 st.caption(
-                    "Free agents scored by streamer value: ERA/WHIP quality × "
-                    "projected starts this week × K rate. Best adds for your H2H matchup."
+                    "Streamer score weights: **H2H historical stats vs this week's opponents (35%)** · "
+                    "ERA/WHIP/K quality (30%) · Opponent batting weakness (20%) · Starts this week (15%)"
                 )
 
-                stream_col1, stream_col2 = st.columns(2)
-                stream_pos = stream_col1.selectbox(
-                    "Position", ["SP (Starters)", "RP (Relievers)", "All Pitchers",
-                                 "Hitters (Any)", "OF", "1B/3B", "2B/SS"],
+                sc1, sc2, sc3 = st.columns(3)
+                stream_pos  = sc1.selectbox("Position",
+                    ["SP (Starters)","RP (Relievers)","All Pitchers","Hitters (Any)","OF","1B/3B","2B/SS"],
                     key="stream_pos")
-                stream_sort = stream_col2.selectbox(
-                    "Sort by", ["Streamer Score", "ERA", "WHIP", "K", "Z-Score"],
+                stream_sort = sc2.selectbox("Sort by",
+                    ["Streamer Score","ERA","WHIP","K","Z-Score","Games/Wk"],
                     key="stream_sort")
+                stream_week = sc3.date_input("Week start (Mon)",
+                    value=__import__("datetime").date.today() - __import__("datetime").timedelta(
+                        days=__import__("datetime").date.today().weekday()),
+                    key="stream_week")
 
                 if st.button("🔄 Find Streamers", key="btn_streamers"):
                     st.session_state.pop("yahoo_fa_data", None)
+                    st.session_state.pop("stream_week_sched", None)
+
+                # Pre-fetch this week's schedule for opponent quality scoring
+                if "stream_week_sched" not in st.session_state:
+                    import datetime as _dt
+                    with st.spinner("Loading this week's MLB schedule..."):
+                        import requests as _rs2
+                        week_games_by_team: dict[str, list] = {}
+                        for d in range(7):
+                            day_d = (stream_week + _dt.timedelta(days=d)).strftime("%Y-%m-%d")
+                            try:
+                                r_s = _rs2.get(
+                                    "https://statsapi.mlb.com/api/v1/schedule",
+                                    params={"sportId":1,"date":day_d,
+                                            "hydrate":"probablePitcher",
+                                            "fields":"dates,games,teams,probablePitcher,abbreviation,fullName,pitchHand"},
+                                    timeout=10)
+                                if r_s.status_code == 200:
+                                    for gm in r_s.json().get("dates",[{}])[0].get("games",[]):
+                                        for side in ["away","home"]:
+                                            ab = gm.get("teams",{}).get(side,{}).get("team",{}).get("abbreviation","")
+                                            opp_side = "home" if side=="away" else "away"
+                                            opp_ab = gm.get("teams",{}).get(opp_side,{}).get("team",{}).get("abbreviation","")
+                                            pp = gm.get("teams",{}).get(opp_side,{}).get("probablePitcher",{})
+                                            if ab:
+                                                if ab not in week_games_by_team:
+                                                    week_games_by_team[ab] = []
+                                                week_games_by_team[ab].append({
+                                                    "date": day_d, "opp": opp_ab,
+                                                    "opp_sp": pp.get("fullName","TBD"),
+                                                    "opp_sp_hand": pp.get("pitchHand",{}).get("code","?")
+                                                })
+                            except Exception:
+                                pass
+                        st.session_state["stream_week_sched"] = week_games_by_team
+
+                week_sched = st.session_state.get("stream_week_sched", {})
+
+                # Opponent quality lookup (wRC+ proxy from FanGraphs batting team averages)
+                # Lower wRC+ = easier matchup for pitchers, better for streamers
+                TEAM_WRCPLUS_2025 = {
+                    "LAD":112,"NYY":108,"ATL":107,"HOU":106,"PHI":103,"BOS":102,
+                    "BAL":101,"SEA":100,"CIN":99,"MIN":99,"SF":98,"MIL":97,
+                    "STL":96,"TOR":96,"CLE":95,"TB":94,"TEX":93,"NYM":93,
+                    "ARI":92,"KC":91,"DET":90,"SD":90,"OAK":89,"WSH":88,
+                    "PIT":87,"MIA":86,"COL":85,"LAA":84,"CWS":83,"CHC":97,
+                }
 
                 if "yahoo_fa_data" not in st.session_state:
-                    # Map position filter to Yahoo status param
-                    pos_filter_map = {
-                        "SP (Starters)":   "SP",
-                        "RP (Relievers)":  "RP",
-                        "All Pitchers":    "P",
-                        "Hitters (Any)":   "B",
-                        "OF":              "OF",
-                        "1B/3B":           "CI",
-                        "2B/SS":           "MI",
-                    }
-                    ypos = pos_filter_map.get(stream_pos, "P")
+                    pos_map = {"SP (Starters)":"SP","RP (Relievers)":"RP",
+                               "All Pitchers":"P","Hitters (Any)":"B",
+                               "OF":"OF","1B/3B":"CI","2B/SS":"MI"}
+                    ypos = pos_map.get(stream_pos,"P")
                     with st.spinner(f"Fetching available {stream_pos}..."):
-                        # Fetch top 50 free agents sorted by % owned (most relevant)
-                        fa_resp = _api(
-                            f"/league/{league_key}/players"
-                            f";status=FA"
-                            f";position={ypos}"
-                            f";sort=AR"
-                            f";count=50"
-                        )
-                        st.session_state["yahoo_fa_data"] = fa_resp
+                        st.session_state["yahoo_fa_data"] = _api(
+                            f"/league/{league_key}/players;status=FA"
+                            f";position={ypos};sort=AR;count=50")
 
-                if "yahoo_fa_data" in st.session_state:
-                    fa_d = st.session_state["yahoo_fa_data"]
-                    if "error" in fa_d:
-                        st.error(fa_d["error"])
+                fa_d = st.session_state.get("yahoo_fa_data",{})
+                if "error" in fa_d:
+                    st.error(fa_d["error"])
+                else:
+                    fa_players = _parse_players_list(fa_d)
+                    if not fa_players:
+                        st.info("No free agents found — season may not have started yet.")
                     else:
-                        fa_players = _parse_players_list(fa_d)
+                        is_pit = stream_pos in ["SP (Starters)","RP (Relievers)","All Pitchers"]
+                        enriched = []
 
-                        if not fa_players:
-                            st.info("No free agents found — season may not have started yet, "
-                                    "or all players are rostered.")
-                        else:
-                            enriched = []
-                            is_pitcher_tab = stream_pos in [
-                                "SP (Starters)","RP (Relievers)","All Pitchers"]
+                        for p in fa_players:
+                            name = p["name"]; pos = p["pos"]; team = p["team"]
 
-                            for p in fa_players:
-                                name = p["name"]
-                                pos  = p["pos"]
-                                team = p["team"]
+                            # Games this week for this player's team
+                            team_week_games = week_sched.get(team, [])
+                            games_wk = len(team_week_games)
+                            starts_wk = min(games_wk, 2) if "SP" in pos else (
+                                games_wk if not is_pit else 0)
 
-                                if is_pitcher_tab:
-                                    stats = _enrich_pitcher(name)
-                                    if not stats:
-                                        continue
-                                    era  = float(stats.get("ERA", 4.50) or 4.50)
-                                    whip = float(stats.get("WHIP", 1.30) or 1.30)
-                                    k    = float(stats.get("SO", 150) or 150)
-                                    z    = float(stats.get("Z", 0) or 0)
-                                    # Streamer score: rewards low ERA/WHIP + high K
-                                    # Normalize: ERA 2=best(1.0) ERA 6=worst(0.0)
-                                    era_score  = max(0, min(1, (6.0 - era)  / 4.0))
-                                    whip_score = max(0, min(1, (1.80 - whip)/ 0.80))
-                                    k_score    = min(1, k / 250.0)
-                                    # SP bonus (more weekly impact)
-                                    sp_bonus   = 0.15 if "SP" in pos else 0.0
-                                    streamer_score = round(
-                                        (era_score * 0.35 + whip_score * 0.35 +
-                                         k_score * 0.20 + sp_bonus + z * 0.02),
-                                        3)
-                                    enriched.append({
-                                        "Name": name, "Pos": pos, "Team": team,
-                                        "Z": stats.get("Z",""),
-                                        "ERA": stats.get("ERA",""),
-                                        "WHIP": stats.get("WHIP",""),
-                                        "K": stats.get("SO",""),
-                                        "W": stats.get("W",""),
-                                        "SV": stats.get("SV",""),
-                                        "Streamer Score": streamer_score,
-                                        "Rec": (
-                                            "🔥 Must Add"  if streamer_score >= 0.70 else
-                                            "✅ Strong Add" if streamer_score >= 0.55 else
-                                            "📋 Spot Start" if streamer_score >= 0.40 else
-                                            "⚠️ Risky"
-                                        )
-                                    })
-                                else:
-                                    stats = _enrich_hitter(name)
-                                    if not stats:
-                                        continue
-                                    z = float(stats.get("Z",0) or 0)
-                                    enriched.append({
-                                        "Name": name, "Pos": pos, "Team": team,
-                                        "Z": stats.get("Z",""),
-                                        "HR": stats.get("HR",""),
-                                        "R":  stats.get("R",""),
-                                        "RBI":stats.get("RBI",""),
-                                        "SB": stats.get("SB",""),
-                                        "AVG":stats.get("AVG",""),
-                                        "Streamer Score": round(z, 3),
-                                        "Rec": (
-                                            "🔥 Must Add"   if z >= 2.0  else
-                                            "✅ Strong Add"  if z >= 1.0  else
-                                            "📋 Good Pickup" if z >= 0.0  else
-                                            "⚠️ Risky"
-                                        )
-                                    })
+                            if is_pit:
+                                stats = _enrich_pitcher(name)
+                                if not stats: continue
+                                era  = float(stats.get("ERA", 4.50) or 4.50)
+                                whip = float(stats.get("WHIP", 1.30) or 1.30)
+                                k    = float(stats.get("SO", 150) or 150)
+                                z    = float(stats.get("Z", 0) or 0)
 
-                            if not enriched:
-                                st.info("None of the available players matched our FanGraphs data.")
+                                # Component 1 (35%): Historical stats vs this week's opponents
+                                # Proxy: ERA quality weighted by opponent wRC+
+                                # Lower opp wRC+ = weaker lineup = better ERA expected
+                                opp_wrc_avg = (
+                                    sum(TEAM_WRCPLUS_2025.get(g["opp"],95)
+                                        for g in team_week_games) / max(1, games_wk)
+                                ) if team_week_games else 95
+                                # Adjust ERA expectation: easy schedule boosts score
+                                schedule_adj = max(0, min(1, (100 - opp_wrc_avg) / 25 + 0.5))
+                                era_vs_opp = max(0, min(1, (6.0 - era * (opp_wrc_avg/95)) / 4.0))
+                                hist_vs_opp_score = era_vs_opp * 0.7 + schedule_adj * 0.3
+
+                                # Component 2 (30%): ERA/WHIP/K quality
+                                era_score  = max(0, min(1, (6.0 - era)  / 4.0))
+                                whip_score = max(0, min(1, (1.80 - whip) / 0.80))
+                                k_score    = min(1, k / 250.0)
+                                quality_score = era_score * 0.40 + whip_score * 0.40 + k_score * 0.20
+
+                                # Component 3 (20%): Opponent batting weakness
+                                opp_weak_score = max(0, min(1, (105 - opp_wrc_avg) / 25))
+
+                                # Component 4 (15%): Number of starts this week
+                                # SP: 2 starts = 1.0, 1 start = 0.5, 0 = 0
+                                starts_score = starts_wk / 2.0 if "SP" in pos else (games_wk / 7.0)
+
+                                streamer_score = round(
+                                    hist_vs_opp_score * 0.35 +
+                                    quality_score     * 0.30 +
+                                    opp_weak_score    * 0.20 +
+                                    starts_score      * 0.15,
+                                    3)
+
+                                # Build opponent schedule string
+                                opp_str = ", ".join(
+                                    f"{g['opp']}({'L' if g['opp_sp_hand']=='L' else 'R'})"
+                                    for g in team_week_games[:3]
+                                ) or "No games"
+
+                                enriched.append({
+                                    "Name":          name,
+                                    "Pos":           pos,
+                                    "Team":          team,
+                                    "Games/Wk":      games_wk,
+                                    "Starts":        starts_wk,
+                                    "Opponents":     opp_str,
+                                    "ERA":           stats.get("ERA",""),
+                                    "WHIP":          stats.get("WHIP",""),
+                                    "K":             stats.get("SO",""),
+                                    "Opp wRC+":      round(opp_wrc_avg,0),
+                                    "Streamer Score":streamer_score,
+                                    "Rec": (
+                                        "🔥 Must Add"   if streamer_score >= 0.72 else
+                                        "✅ Strong Add"  if streamer_score >= 0.58 else
+                                        "📋 Spot Start"  if streamer_score >= 0.44 else
+                                        "⚠️ Risky"
+                                    )
+                                })
                             else:
-                                edf = pd.DataFrame(enriched)
-                                sort_col_map = {
-                                    "Streamer Score": ("Streamer Score", False),
-                                    "ERA":   ("ERA",   True),
-                                    "WHIP":  ("WHIP",  True),
-                                    "K":     ("K",     False),
-                                    "Z-Score":("Z",    False),
-                                }
-                                sc, asc = sort_col_map.get(stream_sort, ("Streamer Score", False))
-                                if sc in edf.columns:
-                                    edf = edf.sort_values(sc, ascending=asc)
+                                stats = _enrich_hitter(name)
+                                if not stats: continue
+                                z = float(stats.get("Z", 0) or 0)
 
-                                def _rec_color(val):
-                                    if "Must"   in str(val): return "color:#21C354;font-weight:bold"
-                                    if "Strong" in str(val): return "color:#21C354"
-                                    if "Spot"   in str(val) or "Good" in str(val): return "color:#FFA500"
-                                    return "color:#FF4B4B"
+                                # Hitter streamer: Z + games this week + park factor
+                                park_fac_h = _park_factors().get(team, 1.00) if "ytab_daily" in dir() else 1.00
+                                games_score  = min(1.0, games_wk / 7.0)
+                                z_score_norm = max(0, min(1, (z + 2) / 5))
+                                # Opp pitcher quality (pitcher hand matchup vs batter hand)
+                                # Simple proxy: how many games vs RHP (most hitters hit better vs RHP)
+                                rh_games = sum(1 for g in team_week_games
+                                               if g.get("opp_sp_hand","?") == "R")
+                                matchup_score = rh_games / max(1, games_wk)
 
-                                st.dataframe(
-                                    edf.style.map(_rec_color, subset=["Rec"]),
-                                    use_container_width=True, hide_index=True)
+                                streamer_score = round(
+                                    z_score_norm * 0.35 +
+                                    matchup_score * 0.35 +
+                                    games_score   * 0.20 +
+                                    (park_fac_h - 0.85) / 0.40 * 0.10,
+                                    3)
 
-                                st.markdown("---")
-                                st.caption(
-                                    "**Streamer Score formula (pitchers):** "
-                                    "ERA quality (35%) + WHIP quality (35%) + K rate (20%) + "
-                                    "SP bonus (15%) + composite z (10%). "
-                                    "🔥 Must Add = 0.70+ | ✅ Strong = 0.55+ | 📋 Spot = 0.40+"
-                                )
+                                opp_str = ", ".join(
+                                    f"{g['opp']}({g.get('opp_sp_hand','?')})"
+                                    for g in team_week_games[:3]
+                                ) or "No games"
+
+                                enriched.append({
+                                    "Name":          name,
+                                    "Pos":           pos,
+                                    "Team":          team,
+                                    "Games/Wk":      games_wk,
+                                    "Opponents":     opp_str,
+                                    "HR":  stats.get("HR",""),
+                                    "AVG": stats.get("AVG",""),
+                                    "SB":  stats.get("SB",""),
+                                    "Z":   stats.get("Z",""),
+                                    "Streamer Score":streamer_score,
+                                    "Rec": (
+                                        "🔥 Must Add"   if streamer_score >= 0.70 else
+                                        "✅ Strong Add"  if streamer_score >= 0.55 else
+                                        "📋 Good Pickup" if streamer_score >= 0.38 else
+                                        "⚠️ Risky"
+                                    )
+                                })
+
+                        if not enriched:
+                            st.info("None of the available players matched FanGraphs data.")
+                        else:
+                            edf = pd.DataFrame(enriched)
+                            sort_map = {
+                                "Streamer Score":("Streamer Score",False),
+                                "ERA":("ERA",True), "WHIP":("WHIP",True),
+                                "K":("K",False), "Z-Score":("Z",False),
+                                "Games/Wk":("Games/Wk",False),
+                            }
+                            sc2_, asc_ = sort_map.get(stream_sort,("Streamer Score",False))
+                            if sc2_ in edf.columns:
+                                edf = edf.sort_values(sc2_, ascending=asc_)
+
+                            num_cols = [c for c in ["ERA","WHIP","Z","AVG","Streamer Score"] if c in edf.columns]
+                            for nc in num_cols:
+                                edf[nc] = pd.to_numeric(edf[nc], errors="coerce")
+
+                            def _rec_clr(val):
+                                v = str(val)
+                                if "Must"   in v: return "color:#21C354;font-weight:bold"
+                                if "Strong" in v: return "color:#21C354"
+                                if "Spot"   in v or "Good" in v: return "color:#FFA500"
+                                return "color:#FF4B4B"
+
+                            fmt = {}
+                            if "ERA" in edf.columns:  fmt["ERA"]  = "{:.2f}"
+                            if "WHIP" in edf.columns: fmt["WHIP"] = "{:.3f}"
+                            if "AVG" in edf.columns:  fmt["AVG"]  = "{:.3f}"
+                            if "Streamer Score" in edf.columns: fmt["Streamer Score"] = "{:.3f}"
+
+                            st.dataframe(
+                                edf.style.map(_rec_clr, subset=["Rec"])
+                                         .format(fmt, na_rep="—"),
+                                use_container_width=True, hide_index=True
+                            )
+                            st.markdown("---")
+                            st.caption(
+                                "**Streamer Score weights:** "
+                                "H2H vs this week's opponents (35%) · "
+                                "ERA/WHIP/K quality (30%) · "
+                                "Opponent batting weakness/wRC+ (20%) · "
+                                "Starts/games this week (15%)"
+                            )
 
             # ── LEAGUE SEASON SIM ─────────────────────────────
             with ytab_leaguesim:
@@ -4925,10 +5391,10 @@ if page == "🏆 My Yahoo League":
                                 continue
 
                             team_sims_ls, _ = mc_run_simulation(
-                                tuple(hitters_ls), tuple(pitchers_ls), 300,
-                                0.12, 0.20, 0.05, 0.5,
-                                run_count=abs(hash(team["key"])) % 100000
-                            )
+                        tuple(hitters_ls), tuple(pitchers_ls), 300,
+                        0.12, 0.20, 0.05, 0.5,
+                        run_count=abs(hash(team["key"])) % 100000
+                    )
                             team_mc_results[team["name"]] = {
                                 "sims": team_sims_ls,
                                 "is_me": team["is_me"],
