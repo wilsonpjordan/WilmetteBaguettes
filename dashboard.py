@@ -5517,13 +5517,21 @@ if page == "🏆 My Yahoo League":
                     team_matchup_t   = {t: np.zeros(N_SIM_LS, dtype=int) for t in team_names}
                     team_cat_w_total = {t: np.zeros(N_SIM_LS, dtype=int) for t in team_names}
 
+                    # Track actual matchups played per team per sim
+                    # (handles odd team counts — one team gets BYE each week)
+                    team_matchups_played = {t: np.zeros(N_SIM_LS, dtype=int) for t in team_names}
+
                     for sim in range(N_SIM_LS):
                         for wk in range(REG_WEEKS_LS):
                             shuffled = np.random.permutation(team_names)
-                            for i in range(0, n_teams - 1, 2):
+                            # Pair teams: (0,1), (2,3), (4,5)...
+                            # If odd number of teams, last team in shuffled gets a BYE
+                            for i in range(0, len(shuffled) - 1, 2):
                                 t1, t2 = shuffled[i], shuffled[i+1]
                                 if t1 not in team_weekly or t2 not in team_weekly:
                                     continue
+                                team_matchups_played[t1][sim] += 1
+                                team_matchups_played[t2][sim] += 1
 
                                 # Count category W/L/T for this matchup
                                 t1_cats_won = 0
@@ -5571,34 +5579,39 @@ if page == "🏆 My Yahoo League":
 
                     prog_ls.empty()
 
-                    # Yahoo win% formula: (W + T*0.5) / total_matchups
-                    TOTAL_MATCHUPS = REG_WEEKS_LS  # each team plays every week
+                    # Yahoo win% formula: (W + T*0.5) / total_matchups_played
                     standings_rows = []
                     for tname in team_names:
-                        mw = team_matchup_w[tname]
-                        ml = team_matchup_l[tname]
-                        mt = team_matchup_t[tname]
-                        cw = team_cat_w_total[tname]
+                        mw  = team_matchup_w[tname]
+                        ml  = team_matchup_l[tname]
+                        mt  = team_matchup_t[tname]
+                        cw  = team_cat_w_total[tname]
+                        mp  = team_matchups_played[tname]  # actual games played
 
-                        # Win% = (W + T*0.5) / total
-                        win_pct_arr = (mw + mt * 0.5) / TOTAL_MATCHUPS * 100
+                        # Win% = (W + T*0.5) / games_played — avoids BYE distortion
+                        denom = np.where(mp > 0, mp, 1)  # avoid div/0
+                        win_pct_arr = (mw + mt * 0.5) / denom * 100
 
                         med_w    = int(np.median(mw))
                         med_l    = int(np.median(ml))
                         med_t    = int(np.median(mt))
+                        med_mp   = int(np.median(mp))  # should be 20 for even leagues
                         med_pct  = round(float(np.median(win_pct_arr)), 1)
                         p10_pct  = round(float(np.percentile(win_pct_arr, 10)), 1)
                         p90_pct  = round(float(np.percentile(win_pct_arr, 90)), 1)
                         med_cats = int(np.median(cw))
 
                         is_me  = next((t["is_me"] for t in all_teams_ls if t["name"]==tname), False)
+                        # Verify W+L+T = total matchups played
+                        wlt_sum = med_w + med_l + med_t
                         standings_rows.append({
-                            "Team":       ("🟢 " if is_me else "") + tname,
-                            "Median W-L-T": f"{med_w}-{med_l}-{med_t}",
-                            "Win%":       med_pct,
-                            "Win% Range": f"{p10_pct}–{p90_pct}%",
-                            "Cat Wins":   med_cats,
-                            "Playoff %":  0,
+                            "Team":         ("🟢 " if is_me else "") + tname,
+                            "W-L-T":        f"{med_w}-{med_l}-{med_t}",
+                            "Games":        wlt_sum,
+                            "Win%":         med_pct,
+                            "Win% Range":   f"{p10_pct}–{p90_pct}%",
+                            "Cat Wins":     med_cats,
+                            "Playoff %":    0,
                         })
 
                     # Playoff probabilities: top N teams by win% per sim
@@ -5608,10 +5621,11 @@ if page == "🏆 My Yahoo League":
                     for sim in range(N_SIM_LS):
                         sim_records = []
                         for t in team_names:
-                            mw_ = team_matchup_w[t][sim]
-                            mt_ = team_matchup_t[t][sim]
-                            wpc = mw_ + mt_ * 0.5
-                            cw_ = team_cat_w_total[t][sim]
+                            mw_  = team_matchup_w[t][sim]
+                            mt_  = team_matchup_t[t][sim]
+                            mp_  = max(1, team_matchups_played[t][sim])
+                            wpc  = (mw_ + mt_ * 0.5) / mp_  # true win%
+                            cw_  = team_cat_w_total[t][sim]
                             sim_records.append((t, wpc, cw_))
                         # Sort by win%, then category wins as tiebreaker
                         sim_records.sort(key=lambda x: (x[1], x[2]), reverse=True)
