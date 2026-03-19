@@ -5365,6 +5365,10 @@ if page == "🏆 My Yahoo League":
                 run_lsim = st.session_state.get("_run_lsim", False)
                 if st.button("🚀 Run League Season Sim", type="primary", key="btn_lsim_go"):
                     import requests as _rlsim
+                    import time as _time_ls
+                    # Use current time as seed so every run is different
+                    _run_seed = int(_time_ls.time() * 1000) % 999983
+                    np.random.seed(_run_seed)
 
                     headers_ls = {
                         "Authorization": f"Bearer {st.session_state['yahoo_token']['access_token']}",
@@ -5426,7 +5430,7 @@ if page == "🏆 My Yahoo League":
                             team_sims_ls, _ = mc_run_simulation(
                         tuple(hitters_ls), tuple(pitchers_ls), 300,
                         0.12, 0.20, 0.05, 0.5,
-                        run_count=abs(hash(team["key"])) % 100000
+                        run_count=(abs(hash(team["key"])) % 100000) + _run_seed
                     )
                             team_mc_results[team["name"]] = {
                                 "sims": team_sims_ls,
@@ -5481,6 +5485,8 @@ if page == "🏆 My Yahoo League":
                                    if t["name"] in team_mc_results
                                    and "sims" in team_mc_results[t["name"]]]
 
+                    # Resample weekly stats fresh each run (no fixed seed here)
+                    # The _run_seed above already randomized numpy state
                     for team in valid_teams:
                         rates = _wk_rates(team_mc_results[team["name"]]["sims"], cats_ls)
                         team_weekly[team["name"]] = _sample_wk(rates, REG_WEEKS_LS, N_SIM_LS)
@@ -5492,8 +5498,10 @@ if page == "🏆 My Yahoo League":
                     team_cat_wins = {t: np.zeros(N_SIM_LS, dtype=int) for t in team_names}
                     team_cat_loss = {t: np.zeros(N_SIM_LS, dtype=int) for t in team_names}
 
+                    # Pre-build vectorized weekly matchup simulation for speed + true variance
+                    # For each sim: random schedule, use that sim's row from team_weekly arrays
                     for sim in range(N_SIM_LS):
-                        # Random schedule: each week pair teams
+                        # Random schedule: each week pair teams randomly
                         for wk in range(REG_WEEKS_LS):
                             shuffled = np.random.permutation(team_names)
                             for i in range(0, n_teams - 1, 2):
@@ -5503,8 +5511,15 @@ if page == "🏆 My Yahoo League":
                                 for cat in cats_ls:
                                     if cat not in team_weekly[t1] or cat not in team_weekly[t2]:
                                         continue
-                                    v1 = team_weekly[t1][cat][sim, wk]
-                                    v2 = team_weekly[t2][cat][sim, wk]
+                                    # Use sim index for team_weekly — each sim row
+                                    # has different Poisson draws for that team's week
+                                    tw1 = team_weekly[t1][cat]
+                                    tw2 = team_weekly[t2][cat]
+                                    si1 = sim % tw1.shape[0]
+                                    si2 = sim % tw2.shape[0]
+                                    wi  = wk  % tw1.shape[1]
+                                    v1  = tw1[si1, wi]
+                                    v2  = tw2[si2, wi]
                                     lower = cat in MC_LOWER
                                     if lower:
                                         w1 = v1 < v2; w2 = v2 < v1
