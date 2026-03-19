@@ -4665,16 +4665,35 @@ if page == "🏆 My Yahoo League":
                     games = st.session_state[cache_key]
 
                 if not games:
-                    st.info(f"No games found for {date_str}. The MLB season starts March 27, 2026. "
-                            "Try selecting a date on or after Opening Day.")
+                    st.info(
+                        f"No games found for {date_str}. "
+                        "The regular MLB season starts March 27, 2026. "
+                        "The Seoul Series (LAD vs CHC) plays March 18-19. "
+                        "Try selecting March 18, 19, or 27+ for live data."
+                    )
                 else:
+                    # MLB Stats API → Yahoo abbreviation mapping
+                    # MLB uses 2-3 letter codes; Yahoo sometimes differs
+                    MLB_TO_YAHOO = {
+                        "SFG":"SF", "SDP":"SD", "KCR":"KC", "TBR":"TB",
+                        "CHW":"CWS", "WSN":"WSH", "ARI":"ARI", "ATL":"ATL",
+                        "LAD":"LAD", "LAA":"LAA", "NYY":"NYY", "NYM":"NYM",
+                        "BOS":"BOS", "CHC":"CHC", "CLE":"CLE", "COL":"COL",
+                        "DET":"DET", "HOU":"HOU", "MIA":"MIA", "MIL":"MIL",
+                        "MIN":"MIN", "OAK":"OAK", "PHI":"PHI", "PIT":"PIT",
+                        "SEA":"SEA", "STL":"STL", "TEX":"TEX", "TOR":"TOR",
+                        "CIN":"CIN", "BAL":"BAL",
+                    }
+                    def _norm_abbr(ab):
+                        return MLB_TO_YAHOO.get(ab, ab)
+
                     # Build team → game mapping
                     team_games = {}  # abbr → game info
                     for g in games:
                         away = g.get("teams",{}).get("away",{})
                         home = g.get("teams",{}).get("home",{})
-                        away_abbr = away.get("team",{}).get("abbreviation","")
-                        home_abbr = home.get("team",{}).get("abbreviation","")
+                        away_abbr = _norm_abbr(away.get("team",{}).get("abbreviation",""))
+                        home_abbr = _norm_abbr(home.get("team",{}).get("abbreviation",""))
                         away_pp = away.get("probablePitcher",{})
                         home_pp = home.get("probablePitcher",{})
                         weather  = g.get("weather",{})
@@ -4721,9 +4740,22 @@ if page == "🏆 My Yahoo League":
 
                     # Filter to roster-relevant teams if needed
                     my_teams = {p["team"] for p in roster_players_d}
+                    mlb_teams_today = set(team_games.keys())
 
                     if view_mode == "My Roster only" and not roster_players_d:
                         st.warning("Load your roster first (👥 My Roster tab) to see roster-filtered matchups.")
+                    elif view_mode == "My Roster only" and my_teams:
+                        matched = my_teams & mlb_teams_today
+                        unmatched = my_teams - mlb_teams_today
+                        if not matched and unmatched:
+                            st.warning(
+                                f"⚠️ Your roster teams ({', '.join(sorted(unmatched))}) "
+                                f"didn't match today's MLB schedule teams ({', '.join(sorted(mlb_teams_today)[:8])}...). "
+                                f"This can happen if Yahoo and MLB use different abbreviations, "
+                                f"or if your players' teams don't have games today."
+                            )
+                        elif matched:
+                            st.success(f"✅ Found {len(matched)} of your teams playing today: {', '.join(sorted(matched))}")
 
                     # Display games
                     park_factors = _park_factors()
@@ -4732,8 +4764,8 @@ if page == "🏆 My Yahoo League":
                     for g in games:
                         away_t  = g.get("teams",{}).get("away",{})
                         home_t  = g.get("teams",{}).get("home",{})
-                        away_ab = away_t.get("team",{}).get("abbreviation","?")
-                        home_ab = home_t.get("team",{}).get("abbreviation","?")
+                        away_ab = _norm_abbr(away_t.get("team",{}).get("abbreviation","?"))
+                        home_ab = _norm_abbr(home_t.get("team",{}).get("abbreviation","?"))
 
                         # Filter by roster teams
                         if view_mode == "My Roster only" and my_teams:
@@ -4748,12 +4780,13 @@ if page == "🏆 My Yahoo League":
                         gtime    = g.get("gameDate","")[:16].replace("T"," ") + " UTC"
                         status   = g.get("status",{}).get("detailedState","Scheduled")
 
-                        away_pp_str = (f"{away_pp.get('fullName','TBD')} "
-                                       f"({'R' if away_pp.get('pitchHand',{}).get('code','?')=='R' else 'L'}HP)"
-                                       ) if away_pp else "TBD"
-                        home_pp_str = (f"{home_pp.get('fullName','TBD')} "
-                                       f"({'R' if home_pp.get('pitchHand',{}).get('code','?')=='R' else 'L'}HP)"
-                                       ) if home_pp else "TBD"
+                        def _pp_str(pp):
+                            if not pp or not pp.get("fullName"):
+                                return "TBD (not announced)"
+                            hand = pp.get("pitchHand",{}).get("code","?")
+                            return f"{pp['fullName']} ({'R' if hand=='R' else 'L' if hand=='L' else '?'}HP)"
+                        away_pp_str = _pp_str(away_pp)
+                        home_pp_str = _pp_str(home_pp)
 
                         wind_str = ""
                         if weather:
