@@ -4313,24 +4313,60 @@ if page == "🏆 My Yahoo League":
                 label = f"**{lg['name']}** — {lg['season']} · {lg['teams']} teams · {lg['type']} · Draft: {lg['draft']}"
                 if st.button(label, key=f"lg_{lg['key']}"):
                     st.session_state["yahoo_league_key"] = lg["key"]
-                    # Fetch my team key
-                    teams_resp = _api(f"/league/{lg['key']}/teams")
-                    if "error" not in teams_resp:
+                    st.session_state["yahoo_my_team_key"]  = None
+                    st.session_state["yahoo_my_team_name"] = None
+
+                    # Strategy 1: /users;use_login=1/teams — most reliable for finding MY team
+                    try:
+                        import requests as _rteam
+                        headers_t = {"Authorization": f"Bearer {st.session_state['yahoo_token']['access_token']}",
+                                     "Accept": "application/json"}
+                        r_mine = _rteam.get(
+                            f"https://fantasysports.yahooapis.com/fantasy/v2"
+                            f"/users;use_login=1/games;game_keys=mlb/teams?format=json",
+                            headers=headers_t, timeout=15)
+                        if r_mine.status_code == 200:
+                            ud = r_mine.json()["fantasy_content"]["users"]["0"]["user"]
+                            games = ud[1]["games"]
+                            for gk, gv in games.items():
+                                if gk == "count": continue
+                                game_teams = gv["game"][1].get("teams", {})
+                                for tk, tv in game_teams.items():
+                                    if tk == "count": continue
+                                    t_info = tv["team"][0]
+                                    t_key  = next((x["team_key"] for x in t_info if isinstance(x,dict) and "team_key" in x), None)
+                                    t_name = next((x["name"] for x in t_info if isinstance(x,dict) and "name" in x), None)
+                                    t_lkey = next((x["league_key"] for x in t_info if isinstance(x,dict) and "league_key" in x), None)
+                                    if t_key and t_lkey == lg["key"]:
+                                        st.session_state["yahoo_my_team_key"]  = t_key
+                                        st.session_state["yahoo_my_team_name"] = t_name or "My Team"
+                                        break
+                    except Exception:
+                        pass
+
+                    # Strategy 2: loop league teams, check is_owned_by_current_login
+                    if not st.session_state["yahoo_my_team_key"]:
                         try:
-                            teams = teams_resp["fantasy_content"]["league"][1]["teams"]
-                            for k, v in teams.items():
-                                if k == "count": continue
-                                t = v["team"][0]
-                                is_mine = next((x.get("is_owned_by_current_login",0)
-                                                for x in t if isinstance(x,dict)), 0)
-                                if is_mine:
-                                    st.session_state["yahoo_my_team_key"] = next(
-                                        (x["team_key"] for x in t if isinstance(x,dict) and "team_key" in x), None)
-                                    st.session_state["yahoo_my_team_name"] = next(
-                                        (x["name"] for x in t if isinstance(x,dict) and "name" in x), "My Team")
-                                    break
+                            teams_resp = _api(f"/league/{lg['key']}/teams")
+                            if "error" not in teams_resp:
+                                all_teams = []
+                                teams_raw = teams_resp["fantasy_content"]["league"][1]["teams"]
+                                for k, v in teams_raw.items():
+                                    if k == "count": continue
+                                    t = v["team"][0]
+                                    is_mine = int(next((x.get("is_owned_by_current_login", 0)
+                                                    for x in t if isinstance(x,dict)), 0))
+                                    t_key  = next((x["team_key"] for x in t if isinstance(x,dict) and "team_key" in x), None)
+                                    t_name = next((x["name"] for x in t if isinstance(x,dict) and "name" in x), "?")
+                                    all_teams.append({"key": t_key, "name": t_name, "is_mine": is_mine})
+                                    if is_mine and t_key:
+                                        st.session_state["yahoo_my_team_key"]  = t_key
+                                        st.session_state["yahoo_my_team_name"] = t_name
+                                # Store all teams for manual fallback
+                                st.session_state["yahoo_all_teams"] = all_teams
                         except Exception:
                             pass
+
                     st.rerun()
         else:
             # ── League loaded — show tabs ─────────────────────
@@ -4339,14 +4375,50 @@ if page == "🏆 My Yahoo League":
             my_team_name  = st.session_state["yahoo_my_team_name"] or "My Team"
 
             st.markdown(f"**League key:** `{league_key}` | **My team:** {my_team_name}")
-            if st.button("← Switch league", key="btn_switch_lg"):
-                st.session_state["yahoo_league_key"]   = None
-                st.session_state["yahoo_my_team_key"]  = None
-                st.session_state["yahoo_my_team_name"] = None
-                st.rerun()
 
-            ytab_roster, ytab_stand, ytab_matchup, ytab_stream = st.tabs([
-                "👥 My Roster", "📊 Standings", "⚔️ This Week", "🌊 Streamers"
+            # If team key detection failed, show manual picker
+            if not my_team_key:
+                st.warning("⚠️ Could not auto-detect your team. Select it manually:")
+                all_teams = st.session_state.get("yahoo_all_teams", [])
+                if not all_teams:
+                    # Fetch teams list now
+                    try:
+                        tr = _api(f"/league/{league_key}/teams")
+                        if "error" not in tr:
+                            all_teams = []
+                            for k, v in tr["fantasy_content"]["league"][1]["teams"].items():
+                                if k == "count": continue
+                                t = v["team"][0]
+                                all_teams.append({
+                                    "key":  next((x["team_key"] for x in t if isinstance(x,dict) and "team_key" in x), ""),
+                                    "name": next((x["name"] for x in t if isinstance(x,dict) and "name" in x), "?"),
+                                })
+                            st.session_state["yahoo_all_teams"] = all_teams
+                    except Exception as e:
+                        st.error(f"Could not load teams: {e}")
+
+                if all_teams:
+                    team_options = {f"{t['name']} ({t['key']})": t for t in all_teams}
+                    chosen = st.selectbox("Pick your team", list(team_options.keys()), key="manual_team_sel")
+                    if st.button("✅ Set as my team", key="btn_set_team"):
+                        st.session_state["yahoo_my_team_key"]  = team_options[chosen]["key"]
+                        st.session_state["yahoo_my_team_name"] = team_options[chosen]["name"]
+                        st.rerun()
+                st.stop()
+
+            sc1, sc2 = st.columns([4,1])
+            sc2.button("← Switch league", key="btn_switch_lg",
+                       on_click=lambda: [
+                           st.session_state.update({
+                               "yahoo_league_key": None,
+                               "yahoo_my_team_key": None,
+                               "yahoo_my_team_name": None,
+                           })
+                       ])
+
+            ytab_roster, ytab_stand, ytab_matchup, ytab_stream, ytab_leaguesim, ytab_matchupsim = st.tabs([
+                "👥 My Roster", "📊 Standings", "⚔️ This Week", "🌊 Streamers",
+                "🏆 League Season Sim", "⚔️ Matchup Sim"
             ])
 
             # ── helpers ───────────────────────────────────────
@@ -4765,3 +4837,619 @@ if page == "🏆 My Yahoo League":
                                     "SP bonus (15%) + composite z (10%). "
                                     "🔥 Must Add = 0.70+ | ✅ Strong = 0.55+ | 📋 Spot = 0.40+"
                                 )
+
+            # ── LEAGUE SEASON SIM ─────────────────────────────
+            with ytab_leaguesim:
+                st.markdown("#### 🏆 League Season Simulator")
+                st.caption(
+                    "Imports all 12 teams' rosters from Yahoo, runs MC projections for each, "
+                    "then simulates a full 20-week H2H season to project final standings."
+                )
+
+                lsim_col1, lsim_col2 = st.columns(2)
+                lsim_n = lsim_col1.slider("Seasons to simulate", 200, 2000, 500, 100, key="lsim_n")
+
+                if st.button("🚀 Import Rosters & Simulate Season", type="primary", key="btn_league_sim"):
+                    st.session_state.pop("league_sim_results", None)
+
+                if "league_sim_results" not in st.session_state:
+                    if st.button("(results will appear here after simulation)", disabled=True, key="lsim_placeholder"):
+                        pass
+                else:
+                    pass  # show results below
+
+                if st.button("🚀 Import Rosters & Simulate Season", type="primary", key="btn_league_sim2") or \
+                   "league_sim_results" not in st.session_state and False:
+                    pass
+
+                # Main sim button logic
+                run_lsim = st.session_state.get("_run_lsim", False)
+                if st.button("🚀 Run League Season Sim", type="primary", key="btn_lsim_go"):
+                    import requests as _rlsim
+
+                    headers_ls = {
+                        "Authorization": f"Bearer {st.session_state['yahoo_token']['access_token']}",
+                        "Accept": "application/json"
+                    }
+
+                    # Step 1: fetch all teams in league
+                    with st.spinner("Fetching all team rosters..."):
+                        teams_url = f"https://fantasysports.yahooapis.com/fantasy/v2/league/{league_key}/teams?format=json"
+                        tr = _rlsim.get(teams_url, headers=headers_ls, timeout=15)
+                        if tr.status_code != 200:
+                            st.error(f"Could not fetch teams: HTTP {tr.status_code}")
+                            st.stop()
+
+                        all_teams_ls = []
+                        try:
+                            teams_raw = tr.json()["fantasy_content"]["league"][1]["teams"]
+                            for k, v in teams_raw.items():
+                                if k == "count": continue
+                                t_info = v["team"][0]
+                                t_key  = next((x["team_key"] for x in t_info if isinstance(x,dict) and "team_key" in x), None)
+                                t_name = next((x["name"] for x in t_info if isinstance(x,dict) and "name" in x), f"Team {k}")
+                                is_me  = t_key == my_team_key
+                                all_teams_ls.append({"key": t_key, "name": t_name, "is_me": is_me})
+                        except Exception as e:
+                            st.error(f"Could not parse teams: {e}")
+                            st.stop()
+
+                    prog_ls = st.progress(0, text="Building team MC projections...")
+                    team_mc_results = {}
+
+                    # Step 2: fetch each team's roster and run MC sim
+                    for ti, team in enumerate(all_teams_ls):
+                        prog_ls.progress((ti) / len(all_teams_ls),
+                                         text=f"Running MC for {team['name']} ({ti+1}/{len(all_teams_ls)})...")
+                        try:
+                            r_url = f"https://fantasysports.yahooapis.com/fantasy/v2/team/{team['key']}/roster/players?format=json"
+                            rr = _rlsim.get(r_url, headers=headers_ls, timeout=15)
+                            if rr.status_code != 200:
+                                continue
+
+                            roster_data = rr.json()
+                            hitters_ls, pitchers_ls = [], []
+                            entries = roster_data["fantasy_content"]["team"][1]["roster"]["0"]["players"]
+                            for k, v in entries.items():
+                                if k == "count": continue
+                                p0   = v["player"][0]
+                                name = next((x["name"]["full"] for x in p0 if isinstance(x,dict) and "name" in x), None)
+                                pos  = next((x["display_position"] for x in p0 if isinstance(x,dict) and "display_position" in x), "")
+                                if not name: continue
+                                if any(x in pos for x in ["SP","RP","P"]):
+                                    if name in pit_all["Name"].values: pitchers_ls.append(name)
+                                else:
+                                    if name in bat_all["Name"].values: hitters_ls.append(name)
+
+                            if not hitters_ls and not pitchers_ls:
+                                continue
+
+                            team_sims_ls, _ = mc_run_simulation(
+                                tuple(hitters_ls), tuple(pitchers_ls), 300,
+                                0.12, 0.20, 0.05, 0.5,
+                                run_count=abs(hash(team["key"])) % 100000
+                            )
+                            team_mc_results[team["name"]] = {
+                                "sims": team_sims_ls,
+                                "is_me": team["is_me"],
+                                "hitters": hitters_ls,
+                                "pitchers": pitchers_ls,
+                            }
+                        except Exception as e:
+                            team_mc_results[team["name"]] = {"error": str(e), "is_me": team["is_me"]}
+
+                    prog_ls.progress(1.0, text="Running season simulation...")
+
+                    # Step 3: simulate seasons
+                    REG_WEEKS_LS = 20
+                    N_SIM_LS     = lsim_n
+                    WEEKS_LS     = 26
+                    cats_ls = ["HR","R","RBI","SB","AVG","W","SV","SO","ERA","WHIP"]
+                    MC_LOWER = {"ERA","WHIP"}
+
+                    def _wk_rates(team_df, cats):
+                        rates = {}
+                        for cat in cats:
+                            if cat not in team_df.columns: continue
+                            mu = float(team_df[cat].mean())
+                            sd = float(team_df[cat].std())
+                            if cat in ["HR","R","RBI","SB","W","SV","SO"]:
+                                rates[cat] = {"mu": mu, "sd": sd, "type": "count"}
+                            elif cat == "AVG":
+                                rates[cat] = {"mu": mu, "sd": max(sd, 0.025), "type": "rate", "lo": 0.1, "hi": 0.6}
+                            elif cat == "ERA":
+                                rates[cat] = {"mu": mu, "sd": max(sd, 1.4), "type": "rate", "lo": 0.0, "hi": 18.0}
+                            elif cat == "WHIP":
+                                rates[cat] = {"mu": mu, "sd": max(sd, 0.18), "type": "rate", "lo": 0.5, "hi": 3.5}
+                        return rates
+
+                    def _sample_wk(rates, n_weeks, n_sims):
+                        weekly = {}
+                        for cat, r in rates.items():
+                            if r["type"] == "count":
+                                true_szn = np.clip(np.random.normal(r["mu"], r["sd"], n_sims), 0, None)
+                                lam = (true_szn / WEEKS_LS)[:, None] * np.ones((1, n_weeks))
+                                weekly[cat] = np.random.poisson(lam).astype(float)
+                            else:
+                                lo, hi = r.get("lo", -np.inf), r.get("hi", np.inf)
+                                weekly[cat] = np.clip(
+                                    np.random.normal(r["mu"], r["sd"], (n_sims, n_weeks)), lo, hi)
+                        return weekly
+
+                    # Build weekly distributions per team
+                    team_weekly = {}
+                    valid_teams = [t for t in all_teams_ls
+                                   if t["name"] in team_mc_results
+                                   and "sims" in team_mc_results[t["name"]]]
+
+                    for team in valid_teams:
+                        rates = _wk_rates(team_mc_results[team["name"]]["sims"], cats_ls)
+                        team_weekly[team["name"]] = _sample_wk(rates, REG_WEEKS_LS, N_SIM_LS)
+
+                    # Simulate season: each team vs a random opponent each week
+                    team_names = list(team_weekly.keys())
+                    n_teams    = len(team_names)
+                    # W/L/T records: [team_idx, sim] → total cat wins
+                    team_cat_wins = {t: np.zeros(N_SIM_LS, dtype=int) for t in team_names}
+                    team_cat_loss = {t: np.zeros(N_SIM_LS, dtype=int) for t in team_names}
+
+                    for sim in range(N_SIM_LS):
+                        # Random schedule: each week pair teams
+                        for wk in range(REG_WEEKS_LS):
+                            shuffled = np.random.permutation(team_names)
+                            for i in range(0, n_teams - 1, 2):
+                                t1, t2 = shuffled[i], shuffled[i+1]
+                                if t1 not in team_weekly or t2 not in team_weekly:
+                                    continue
+                                for cat in cats_ls:
+                                    if cat not in team_weekly[t1] or cat not in team_weekly[t2]:
+                                        continue
+                                    v1 = team_weekly[t1][cat][sim, wk]
+                                    v2 = team_weekly[t2][cat][sim, wk]
+                                    lower = cat in MC_LOWER
+                                    if lower:
+                                        w1 = v1 < v2; w2 = v2 < v1
+                                    else:
+                                        w1 = v1 > v2; w2 = v2 > v1
+                                    if w1:
+                                        team_cat_wins[t1][sim] += 1
+                                        team_cat_loss[t2][sim] += 1
+                                    elif w2:
+                                        team_cat_wins[t2][sim] += 1
+                                        team_cat_loss[t1][sim] += 1
+
+                    prog_ls.empty()
+
+                    # Build results
+                    standings_rows = []
+                    for tname in team_names:
+                        med_w  = int(np.median(team_cat_wins[tname]))
+                        med_l  = int(np.median(team_cat_loss[tname]))
+                        p10_w  = int(np.percentile(team_cat_wins[tname], 10))
+                        p90_w  = int(np.percentile(team_cat_wins[tname], 90))
+                        is_me  = next((t["is_me"] for t in all_teams_ls if t["name"]==tname), False)
+                        standings_rows.append({
+                            "Team":       ("🟢 " if is_me else "") + tname,
+                            "Median W":   med_w,
+                            "Median L":   med_l,
+                            "Win %":      round(med_w / (med_w + med_l) * 100, 1) if (med_w+med_l) > 0 else 0,
+                            "Range":      f"{p10_w}–{p90_w}",
+                            "Playoff %":  0,  # computed below
+                        })
+
+                    # Compute playoff probabilities (top 4 in each sim)
+                    PLAYOFF_SPOTS = 4
+                    playoff_counts = {t: 0 for t in team_names}
+                    for sim in range(N_SIM_LS):
+                        sim_wins = [(t, team_cat_wins[t][sim]) for t in team_names]
+                        sim_wins.sort(key=lambda x: -x[1])
+                        for t, _ in sim_wins[:PLAYOFF_SPOTS]:
+                            playoff_counts[t] += 1
+
+                    for row in standings_rows:
+                        tname_clean = row["Team"].replace("🟢 ", "")
+                        row["Playoff %"] = round(playoff_counts.get(tname_clean, 0) / N_SIM_LS * 100, 1)
+
+                    standings_rows.sort(key=lambda x: -x["Median W"])
+
+                    # Category strength table
+                    cat_strength = {}
+                    for tname in team_names:
+                        if "sims" not in team_mc_results[tname]: continue
+                        sims_df = team_mc_results[tname]["sims"]
+                        cat_strength[tname] = {
+                            cat: round(float(sims_df[cat].mean()), 2)
+                            for cat in cats_ls if cat in sims_df.columns
+                        }
+
+                    st.session_state["league_sim_results"] = {
+                        "standings": standings_rows,
+                        "cat_strength": cat_strength,
+                        "my_team": my_team_name,
+                        "n_sim": N_SIM_LS,
+                    }
+                    st.rerun()
+
+                # Display results
+                if "league_sim_results" in st.session_state:
+                    res = st.session_state["league_sim_results"]
+                    st.markdown(f"*{res['n_sim']:,} simulated seasons — based on current Yahoo rosters*")
+                    st.markdown("---")
+
+                    # Standings table
+                    st.markdown("#### 📊 Projected Final Standings")
+                    sdf = pd.DataFrame(res["standings"])
+
+                    def _playoff_color(val):
+                        try:
+                            v = float(val)
+                            if v >= 70: return "color:#21C354;font-weight:bold"
+                            if v >= 50: return "color:#21C354"
+                            if v >= 30: return "color:#FFA500"
+                            return "color:#FF4B4B"
+                        except: return ""
+
+                    def _team_color(val):
+                        if "🟢" in str(val): return "color:#4fc3f7;font-weight:bold"
+                        return ""
+
+                    st.dataframe(
+                        sdf.style
+                           .map(_team_color, subset=["Team"])
+                           .map(_playoff_color, subset=["Playoff %"])
+                           .format({"Win %": "{:.1f}%", "Playoff %": "{:.1f}%"}),
+                        use_container_width=True, hide_index=True
+                    )
+
+                    # Category strength heatmap
+                    st.markdown("---")
+                    st.markdown("#### 🔥 Category Strength by Team")
+                    cs = res["cat_strength"]
+                    if cs:
+                        cats_order = ["HR","R","RBI","SB","AVG","W","SV","SO","ERA","WHIP"]
+                        cs_rows = []
+                        for tname, cat_vals in cs.items():
+                            is_me = tname == res["my_team"]
+                            row = {"Team": ("🟢 " if is_me else "") + tname}
+                            row.update({c: cat_vals.get(c, "") for c in cats_order if c in cat_vals})
+                            cs_rows.append(row)
+                        cs_rows.sort(key=lambda x: x.get("HR", 0), reverse=True)
+                        cs_df = pd.DataFrame(cs_rows)
+                        num_cols = [c for c in cats_order if c in cs_df.columns]
+                        st.dataframe(
+                            cs_df.style.background_gradient(subset=num_cols, cmap="RdYlGn"),
+                            use_container_width=True, hide_index=True
+                        )
+
+                    # Per-opponent projected record
+                    st.markdown("---")
+                    st.markdown("#### ⚔️ My Projected Record vs Each Opponent")
+                    st.caption("Expected W-L-T across all simulated seasons when facing each opponent.")
+                    my_name_ls = res["my_team"]
+                    if my_name_ls in team_weekly:
+                        opp_records = []
+                        for opp_name_ls in team_names:
+                            if opp_name_ls == my_name_ls: continue
+                            # Re-simulate just my team vs this one opponent
+                            N_OPP_SIM = min(lsim_n, 1000)
+                            # Simulate all 20 weeks vs this opponent
+                            # my_cats_won[sim] = total category wins across all 20 weeks
+                            my_cats_won  = np.zeros(N_OPP_SIM, dtype=int)
+                            opp_cats_won = np.zeros(N_OPP_SIM, dtype=int)
+                            for cat in cats_ls:
+                                if cat not in team_weekly.get(my_name_ls, {}) or                                    cat not in team_weekly.get(opp_name_ls, {}): continue
+                                # Shape: (N_OPP_SIM, REG_WEEKS_LS)
+                                my_all  = team_weekly[my_name_ls][cat][:N_OPP_SIM, :]   # all 20 weeks
+                                opp_all = team_weekly[opp_name_ls][cat][:N_OPP_SIM, :]
+                                lower   = cat in MC_LOWER
+                                if lower:
+                                    my_cats_won  += (my_all < opp_all).sum(axis=1)
+                                    opp_cats_won += (my_all > opp_all).sum(axis=1)
+                                else:
+                                    my_cats_won  += (my_all > opp_all).sum(axis=1)
+                                    opp_cats_won += (my_all < opp_all).sum(axis=1)
+
+                            # Median season record across all sims
+                            med_w = int(np.median(my_cats_won))
+                            med_l = int(np.median(opp_cats_won))
+                            med_t = REG_WEEKS_LS * len(cats_ls) - med_w - med_l
+                            win_pct_vs = med_w / (med_w + med_l) * 100 if (med_w+med_l) > 0 else 50
+                            opp_records.append({
+                                "Opponent":   opp_name_ls,
+                                "Cat W-L-T":  f"{med_w}–{med_l}–{max(0,med_t)}",
+                                "Total Slots":f"{REG_WEEKS_LS * len(cats_ls)}",
+                                "My Win %":   round(win_pct_vs, 1),
+                                "Result":    ("🔥 Easy W" if win_pct_vs >= 65 else
+                                              "✅ Likely W" if win_pct_vs >= 55 else
+                                              "⚖️ Toss-up" if win_pct_vs >= 45 else
+                                              "⚠️ Tough L" if win_pct_vs >= 35 else
+                                              "🚨 Hard L"),
+                            })
+
+                        opp_records.sort(key=lambda x: -x["My Win %"])
+                        odf = pd.DataFrame(opp_records)
+
+                        def _opp_result_color(val):
+                            v = str(val)
+                            if "Easy"   in v: return "color:#21C354;font-weight:bold"
+                            if "Likely" in v: return "color:#21C354"
+                            if "Toss"   in v: return "color:#FFA500"
+                            if "Tough"  in v: return "color:#FFA500"
+                            return "color:#FF4B4B;font-weight:bold"
+
+                        def _owin_color(val):
+                            try:
+                                v = float(val)
+                                if v >= 65: return "color:#21C354;font-weight:bold"
+                                if v >= 55: return "color:#21C354"
+                                if v >= 45: return "color:#FFA500"
+                                return "color:#FF4B4B"
+                            except: return ""
+
+                        st.dataframe(
+                            odf.style
+                               .map(_owin_color,      subset=["My Win %"])
+                               .map(_opp_result_color, subset=["Result"])
+                               .format({"My Win %": "{:.1f}%"}),
+                            use_container_width=True, hide_index=True
+                        )
+
+                    if st.button("🔄 Re-run Simulation", key="btn_lsim_rerun"):
+                        st.session_state.pop("league_sim_results", None)
+                        st.rerun()
+
+            # ── MATCHUP SIM ───────────────────────────────────
+            with ytab_matchupsim:
+                st.markdown("#### ⚔️ Current Matchup Simulator")
+                st.caption(
+                    "Fetches your current week's opponent roster and simulates "
+                    "the 10-category matchup 1,000 times to show win probabilities per category "
+                    "and score distribution."
+                )
+
+                msim_n = st.slider("Matchup simulations", 500, 5000, 1000, 500, key="msim_n")
+
+                if st.button("🎲 Simulate This Week's Matchup", type="primary", key="btn_msim"):
+                    import requests as _rmsim
+
+                    headers_ms = {
+                        "Authorization": f"Bearer {st.session_state['yahoo_token']['access_token']}",
+                        "Accept": "application/json"
+                    }
+
+                    with st.spinner("Fetching current matchup..."):
+                        # Get current week matchup to find opponent
+                        mu_url = f"https://fantasysports.yahooapis.com/fantasy/v2/team/{my_team_key}/matchups?format=json"
+                        mu_r   = _rmsim.get(mu_url, headers=headers_ms, timeout=15)
+
+                        opp_team_key  = None
+                        opp_team_name = "Opponent"
+                        week_num      = "?"
+
+                        if mu_r.status_code == 200:
+                            try:
+                                matchups = mu_r.json()["fantasy_content"]["team"][1]["matchups"]
+                                for mk, mv in matchups.items():
+                                    if mk == "count": continue
+                                    mu = mv.get("matchup", mv)
+                                    if str(mu.get("is_current_week","0")) == "1" or mk == "0":
+                                        week_num = mu.get("week","?")
+                                        mu_teams = mu["0"]["teams"]
+                                        for tk in ["0","1"]:
+                                            t_info = mu_teams[tk]["team"][0]
+                                            t_key  = next((x["team_key"] for x in t_info if isinstance(x,dict) and "team_key" in x), None)
+                                            t_name = next((x["name"] for x in t_info if isinstance(x,dict) and "name" in x), "?")
+                                            if t_key and t_key != my_team_key:
+                                                opp_team_key  = t_key
+                                                opp_team_name = t_name
+                                        break
+                            except Exception as e:
+                                st.warning(f"Could not parse matchup: {e}")
+
+                        if not opp_team_key:
+                            st.error("Could not find current opponent. Season may not have started yet.")
+                            st.stop()
+
+                    st.markdown(f"**Week {week_num}:** {my_team_name} vs **{opp_team_name}**")
+
+                    def _fetch_roster_names(team_key):
+                        hitters, pitchers = [], []
+                        try:
+                            r = _rmsim.get(
+                                f"https://fantasysports.yahooapis.com/fantasy/v2/team/{team_key}/roster/players?format=json",
+                                headers=headers_ms, timeout=15)
+                            if r.status_code != 200: return hitters, pitchers
+                            entries = r.json()["fantasy_content"]["team"][1]["roster"]["0"]["players"]
+                            for k, v in entries.items():
+                                if k == "count": continue
+                                p0   = v["player"][0]
+                                name = next((x["name"]["full"] for x in p0 if isinstance(x,dict) and "name" in x), None)
+                                pos  = next((x["display_position"] for x in p0 if isinstance(x,dict) and "display_position" in x), "")
+                                if not name: continue
+                                if any(x in pos for x in ["SP","RP","P"]):
+                                    if name in pit_all["Name"].values: pitchers.append(name)
+                                else:
+                                    if name in bat_all["Name"].values: hitters.append(name)
+                        except Exception:
+                            pass
+                        return hitters, pitchers
+
+                    with st.spinner(f"Loading rosters for both teams..."):
+                        my_h_ms,  my_p_ms  = _fetch_roster_names(my_team_key)
+                        opp_h_ms, opp_p_ms = _fetch_roster_names(opp_team_key)
+
+                    if not my_h_ms and not my_p_ms:
+                        st.warning("Could not load your roster from FanGraphs data. Names may not match.")
+                    if not opp_h_ms and not opp_p_ms:
+                        st.warning(f"Could not load {opp_team_name}'s roster from FanGraphs data.")
+
+                    with st.spinner("Running MC projections for both rosters..."):
+                        my_sims,  _ = mc_run_simulation(
+                            tuple(my_h_ms),  tuple(my_p_ms),  500,
+                            0.12, 0.20, 0.05, 0.5, run_count=1111)
+                        opp_sims, _ = mc_run_simulation(
+                            tuple(opp_h_ms), tuple(opp_p_ms), 500,
+                            0.12, 0.20, 0.05, 0.5, run_count=2222)
+
+                    with st.spinner(f"Simulating {msim_n:,} matchup weeks..."):
+                        cats_ms  = ["HR","R","RBI","SB","AVG","W","SV","SO","ERA","WHIP"]
+                        LOWER_MS = {"ERA","WHIP"}
+                        WEEKS_MS = 26
+
+                        def _weekly_single(team_df, cats, n):
+                            result = {}
+                            for cat in cats:
+                                if cat not in team_df.columns: continue
+                                mu = float(team_df[cat].mean())
+                                sd = float(team_df[cat].std())
+                                if cat in ["HR","R","RBI","SB","W","SV","SO"]:
+                                    true_szn = np.clip(np.random.normal(mu, sd, n), 0, None)
+                                    result[cat] = np.random.poisson(true_szn / WEEKS_MS).astype(float)
+                                elif cat == "AVG":
+                                    result[cat] = np.clip(np.random.normal(mu, max(sd,0.025), n), 0.1, 0.6)
+                                elif cat == "ERA":
+                                    result[cat] = np.clip(np.random.normal(mu, max(sd,1.4), n), 0.0, 18.0)
+                                elif cat == "WHIP":
+                                    result[cat] = np.clip(np.random.normal(mu, max(sd,0.18), n), 0.5, 3.5)
+                            return result
+
+                        N = msim_n
+                        my_wk  = _weekly_single(my_sims,  cats_ms, N)
+                        opp_wk = _weekly_single(opp_sims, cats_ms, N)
+
+                        cat_results = {}
+                        score_dist  = np.zeros(11, dtype=int)  # 0-10 my cats won
+
+                        for sim in range(N):
+                            my_score = 0
+                            for cat in cats_ms:
+                                if cat not in my_wk or cat not in opp_wk: continue
+                                mv = my_wk[cat][sim]; ov = opp_wk[cat][sim]
+                                if cat in LOWER_MS:
+                                    win = mv < ov; tie = abs(mv-ov) < 0.001
+                                else:
+                                    win = mv > ov; tie = abs(mv-ov) < 0.001
+                                if cat not in cat_results:
+                                    cat_results[cat] = {"w":0,"l":0,"t":0}
+                                if win:
+                                    cat_results[cat]["w"] += 1; my_score += 1
+                                elif tie:
+                                    cat_results[cat]["t"] += 1
+                                else:
+                                    cat_results[cat]["l"] += 1
+                            score_dist[my_score] += 1
+
+                    # ── Display results ──────────────────────────────
+                    st.markdown("---")
+
+                    # Overall win probability (win = score 6+ out of 10)
+                    overall_win  = sum(score_dist[6:]) / N * 100
+                    overall_loss = sum(score_dist[:5]) / N * 100
+                    overall_tie  = score_dist[5] / N * 100
+
+                    color_win = "#21C354" if overall_win > 55 else "#FFA500" if overall_win > 45 else "#FF4B4B"
+                    outcome   = ("🏆 Projected WIN" if overall_win > 55 else
+                                 "⚖️ Toss-up"      if overall_win > 45 else
+                                 "💀 Projected LOSS")
+                    st.markdown(
+                        f"<h2 style='text-align:center;color:{color_win}'>{outcome}</h2>",
+                        unsafe_allow_html=True)
+
+                    oc1, oc2, oc3 = st.columns(3)
+                    oc1.metric("My Win Probability",  f"{overall_win:.1f}%",
+                               delta=f"{overall_win-50:+.1f}% vs coin flip")
+                    oc2.metric("Toss-up",             f"{overall_tie:.1f}%")
+                    oc3.metric("Opp Win Probability", f"{overall_loss:.1f}%")
+
+                    # Per-category win % — the core output
+                    st.markdown("---")
+                    st.markdown(f"#### 🏅 Category Win Probabilities vs {opp_team_name}")
+                    cat_rows = []
+                    for cat in cats_ms:
+                        if cat not in cat_results: continue
+                        cr    = cat_results[cat]
+                        w_pct = cr["w"] / N * 100
+                        l_pct = cr["l"] / N * 100
+                        t_pct = cr["t"] / N * 100
+
+                        # Weekly projected stat (median of weekly draws)
+                        my_proj  = float(np.median(my_wk[cat]))  if cat in my_wk  else 0
+                        opp_proj = float(np.median(opp_wk[cat])) if cat in opp_wk else 0
+                        if cat == "AVG":
+                            proj_str = f"{my_proj:.3f} vs {opp_proj:.3f}"
+                        elif cat in ["ERA","WHIP"]:
+                            proj_str = f"{my_proj:.2f} vs {opp_proj:.2f}"
+                        else:
+                            proj_str = f"{my_proj:.1f} vs {opp_proj:.1f}"
+
+                        edge = ("🔥 Strong win"  if w_pct >= 65 else
+                                "✅ Likely win"   if w_pct >= 55 else
+                                "⚖️ Toss-up"      if w_pct >= 45 else
+                                "⚠️ Likely loss"  if w_pct >= 35 else
+                                "🚨 Losing badly")
+
+                        cat_rows.append({
+                            "Category":          cat,
+                            "My Win %":          round(w_pct, 1),
+                            "Opp Win %":         round(l_pct, 1),
+                            "Tie %":             round(t_pct, 1),
+                            "Avg/Wk (Me / Opp)": proj_str,
+                            "Edge":              edge,
+                        })
+
+                    cdf = pd.DataFrame(cat_rows)
+
+                    def _edge_col(val):
+                        v = str(val)
+                        if "Strong"  in v: return "color:#21C354;font-weight:bold"
+                        if "Likely win" in v: return "color:#21C354"
+                        if "Toss"    in v: return "color:#FFA500"
+                        if "Likely loss" in v: return "color:#FFA500"
+                        return "color:#FF4B4B;font-weight:bold"
+
+                    def _wpct_col(val):
+                        try:
+                            v = float(val)
+                            if v >= 65: return "color:#21C354;font-weight:bold"
+                            if v >= 55: return "color:#21C354"
+                            if v >= 45: return "color:#FFA500"
+                            return "color:#FF4B4B"
+                        except: return ""
+
+                    st.dataframe(
+                        cdf.style
+                           .map(_wpct_col, subset=["My Win %"])
+                           .map(_edge_col,  subset=["Edge"])
+                           .format({"My Win %": "{:.1f}%",
+                                    "Opp Win %": "{:.1f}%",
+                                    "Tie %": "{:.1f}%"}),
+                        use_container_width=True, hide_index=True
+                    )
+
+                    # Expected score summary
+                    exp_wins = sum(cr["w"]/N for cr in cat_results.values())
+                    exp_loss = sum(cr["l"]/N for cr in cat_results.values())
+                    st.caption(
+                        f"Expected score: **{exp_wins:.1f} – {exp_loss:.1f}** "
+                        f"| Simulated {N:,} matchups"
+                    )
+
+                    # Roster summary
+                    st.markdown("---")
+                    rc1, rc2 = st.columns(2)
+                    with rc1:
+                        st.markdown(f"**My Roster ({my_team_name})**")
+                        if my_h_ms:  st.caption("Hitters: "  + ", ".join(my_h_ms))
+                        if my_p_ms:  st.caption("Pitchers: " + ", ".join(my_p_ms))
+                        if not my_h_ms and not my_p_ms:
+                            st.warning("No players matched FanGraphs data")
+                    with rc2:
+                        st.markdown(f"**{opp_team_name}**")
+                        if opp_h_ms: st.caption("Hitters: "  + ", ".join(opp_h_ms))
+                        if opp_p_ms: st.caption("Pitchers: " + ", ".join(opp_p_ms))
+                        if not opp_h_ms and not opp_p_ms:
+                            st.warning("No players matched FanGraphs data")
+
+                else:
+                    st.info("Click **🎲 Simulate This Week's Matchup** to run the simulation. "
+                            "Requires the season to have started and a current week matchup.")
