@@ -5606,14 +5606,24 @@ if page == "🏆 My Yahoo League":
                     standings_rows.sort(key=lambda x: -x["Cat Win%"])
 
                     # Category strength table
+                    # Cat strength: store per-week rates for counting stats,
+                    # season totals for rate stats (AVG/ERA/WHIP stay as-is)
+                    WEEKS_SEASON = 26.0
+                    COUNT_CATS   = {"HR","R","RBI","SB","W","SV","SO"}
+                    RATE_CATS    = {"AVG","ERA","WHIP"}
                     cat_strength = {}
                     for tname in team_names:
                         if "sims" not in team_mc_results[tname]: continue
                         sims_df = team_mc_results[tname]["sims"]
-                        cat_strength[tname] = {
-                            cat: round(float(sims_df[cat].mean()), 2)
-                            for cat in cats_ls if cat in sims_df.columns
-                        }
+                        row_cs = {}
+                        for cat in cats_ls:
+                            if cat not in sims_df.columns: continue
+                            mu = float(sims_df[cat].mean())
+                            if cat in COUNT_CATS:
+                                row_cs[cat] = round(mu / WEEKS_SEASON, 2)  # per-week
+                            else:
+                                row_cs[cat] = round(mu, 3)  # rate stat as-is
+                        cat_strength[tname] = row_cs
 
                     st.session_state["league_sim_results"] = {
                         "standings": standings_rows,
@@ -5675,22 +5685,52 @@ if page == "🏆 My Yahoo League":
                     # Category strength heatmap
                     st.markdown("---")
                     st.markdown("#### 🔥 Category Strength by Team")
+                    st.caption("Counting stats shown as projected per-week average. Green = best in league, Red = worst. ERA/WHIP: lower is better (gradient inverted).")
                     cs = res["cat_strength"]
                     if cs:
                         cats_order = ["HR","R","RBI","SB","AVG","W","SV","SO","ERA","WHIP"]
+                        LOWER_BETTER_CS = {"ERA","WHIP"}
                         cs_rows = []
                         for tname, cat_vals in cs.items():
                             is_me = tname == res["my_team"]
                             row = {"Team": ("🟢 " if is_me else "") + tname}
-                            row.update({c: cat_vals.get(c, "") for c in cats_order if c in cat_vals})
+                            for c in cats_order:
+                                if c in cat_vals:
+                                    row[c] = cat_vals[c]
                             cs_rows.append(row)
-                        cs_rows.sort(key=lambda x: x.get("HR", 0), reverse=True)
                         cs_df = pd.DataFrame(cs_rows)
-                        num_cols = [c for c in cats_order if c in cs_df.columns]
-                        st.dataframe(
-                            cs_df.style.background_gradient(subset=num_cols, cmap="RdYlGn"),
-                            use_container_width=True, hide_index=True
-                        )
+
+                        # Sort by composite: sum of per-cat ranks (higher = stronger team)
+                        num_cols_cs = [c for c in cats_order if c in cs_df.columns]
+                        for c in num_cols_cs:
+                            cs_df[c] = pd.to_numeric(cs_df[c], errors="coerce")
+
+                        # Compute rank score for sorting (1=best in cat)
+                        rank_scores = pd.Series(0.0, index=cs_df.index)
+                        for c in num_cols_cs:
+                            if c in LOWER_BETTER_CS:
+                                rank_scores += cs_df[c].rank(ascending=True)   # lower ERA = rank 1
+                            else:
+                                rank_scores += cs_df[c].rank(ascending=False)  # higher HR = rank 1
+                        cs_df.insert(1, "Rank Score", rank_scores.round(1))
+                        cs_df = cs_df.sort_values("Rank Score")
+
+                        # Format display values
+                        fmt_cs = {}
+                        for c in num_cols_cs:
+                            if c == "AVG":             fmt_cs[c] = "{:.3f}"
+                            elif c in {"ERA","WHIP"}:  fmt_cs[c] = "{:.2f}"
+                            else:                      fmt_cs[c] = "{:.1f}"
+
+                        # Apply per-column gradients with correct direction
+                        styled_cs = cs_df.drop(columns=["Rank Score"]).style
+                        for c in num_cols_cs:
+                            if c in cs_df.columns:
+                                cmap = "RdYlGn_r" if c in LOWER_BETTER_CS else "RdYlGn"
+                                styled_cs = styled_cs.background_gradient(subset=[c], cmap=cmap)
+                        styled_cs = styled_cs.format(fmt_cs, na_rep="—")
+
+                        st.dataframe(styled_cs, use_container_width=True, hide_index=True)
 
                     # Per-opponent projected record
                     st.markdown("---")
