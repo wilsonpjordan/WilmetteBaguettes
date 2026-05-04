@@ -895,6 +895,9 @@ page = st.sidebar.radio("Navigate", [
     "🎯 Strategy & Target List",
     "⚙️ Weight Dashboard",
     "🎲 Monte Carlo Sim",
+    "📈 Live Stats 2026",
+    "🔬 Edge Finder",
+    "🔬 Player Lab",
     "🏆 My Yahoo League",
 ])
 st.sidebar.markdown("---")
@@ -4027,6 +4030,622 @@ elif page == "🎲 Monte Carlo Sim":
 #  7. Auto-refresh when token is near expiry using refresh_token
 #
 
+# ═══════════════════════════════════════════════════════
+# PAGE: 📈 Live Stats 2026
+# ═══════════════════════════════════════════════════════
+if page == "📈 Live Stats 2026":
+    st.title("📈 Live Stats 2026")
+    st.caption("Live FanGraphs data via pybaseball — refreshes every 4 hours. Season in progress.")
+
+    import datetime as _dt26
+
+    # ── Cached data loaders ──────────────────────────────────────────
+    @st.cache_data(ttl=14400, show_spinner=False)
+    def _live_bat_2026(qual=10):
+        try:
+            from pybaseball import batting_stats
+            df = batting_stats(2026, qual=qual)
+            return df
+        except Exception as e:
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=14400, show_spinner=False)
+    def _live_pit_2026(qual=1):
+        try:
+            from pybaseball import pitching_stats
+            df = pitching_stats(2026, qual=qual)
+            return df
+        except Exception as e:
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=7200, show_spinner=False)
+    def _live_bat_range(start_dt, end_dt):
+        try:
+            from pybaseball import batting_stats_range
+            df = batting_stats_range(start_dt, end_dt)
+            return df
+        except Exception:
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=7200, show_spinner=False)
+    def _live_pit_range(start_dt, end_dt):
+        try:
+            from pybaseball import pitching_stats_range
+            df = pitching_stats_range(start_dt, end_dt)
+            return df
+        except Exception:
+            return pd.DataFrame()
+
+    # Date helpers
+    today26     = _dt26.date.today()
+    season_start = _dt26.date(2026, 3, 27)
+    days_in     = max(1, (today26 - season_start).days)
+    wk_ago      = (today26 - _dt26.timedelta(days=7)).strftime("%Y-%m-%d")
+    two_wk_ago  = (today26 - _dt26.timedelta(days=14)).strftime("%Y-%m-%d")
+    today_str   = today26.strftime("%Y-%m-%d")
+
+    # Load data with spinner
+    with st.spinner("Loading 2026 season stats from FanGraphs..."):
+        bat26 = _live_bat_2026(qual=10)
+        pit26 = _live_pit_2026(qual=1)
+
+    if bat26.empty and pit26.empty:
+        st.warning(
+            "Could not load 2026 stats from FanGraphs. "
+            "Data may not be available yet, or FanGraphs may be temporarily unavailable. "
+            "Try again in a few minutes."
+        )
+        st.stop()
+
+    st.success(f"✅ {len(bat26)} batters · {len(pit26)} pitchers · {days_in} days into 2026 season")
+
+    ls_tab1, ls_tab2, ls_tab3, ls_tab4 = st.tabs([
+        "🏆 League Leaders",
+        "👥 My Roster Live",
+        "🎯 Streamer Finder",
+        "⚡ Hot/Cold Report",
+    ])
+
+    # ── HELPERS ─────────────────────────────────────────────────────
+    def _fmt_col(df, col, fmt):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        return df
+
+    def _pct_bar_color(val, lo, hi, invert=False):
+        try:
+            v = float(val)
+            pct = (v - lo) / (hi - lo) if hi > lo else 0.5
+            pct = max(0, min(1, pct))
+            if invert: pct = 1 - pct
+            r = int(255 * (1 - pct))
+            g = int(200 * pct)
+            return f"color: rgb({r},{g},60)"
+        except:
+            return ""
+
+    # ── TAB 1: LEAGUE LEADERS ───────────────────────────────────────
+    with ls_tab1:
+        st.markdown("#### 🏆 2026 Season Leaders")
+
+        ll_c1, ll_c2, ll_c3 = st.columns(3)
+        ll_type  = ll_c1.radio("Type", ["Hitters", "Pitchers"], horizontal=True, key="ll_type")
+        ll_min   = ll_c2.number_input("Min PA / IP", value=30 if ll_type=="Hitters" else 10,
+                                       min_value=1, max_value=200, key="ll_min")
+        ll_sort  = ll_c3.selectbox(
+            "Sort by",
+            ["HR","R","RBI","SB","AVG","OBP","SLG","wRC+","xwOBA","Barrel%","K%","BB%"]
+            if ll_type == "Hitters" else
+            ["ERA","WHIP","FIP","xFIP","K%","BB%","SwStr%","GB%","WAR","SO"],
+            key="ll_sort"
+        )
+
+        if ll_type == "Hitters" and not bat26.empty:
+            df_ll = bat26.copy()
+            pa_col = "PA" if "PA" in df_ll.columns else "AB"
+            df_ll = df_ll[pd.to_numeric(df_ll.get(pa_col, 0), errors="coerce") >= ll_min]
+
+            h_show = [c for c in ["Name","Team","G","PA","AB","HR","R","RBI","SB",
+                                   "AVG","OBP","SLG","OPS","wRC+","xwOBA",
+                                   "Barrel%","K%","BB%","BABIP","WAR"]
+                      if c in df_ll.columns]
+
+            if ll_sort in df_ll.columns:
+                asc = ll_sort in ["K%"]
+                df_ll = df_ll.sort_values(ll_sort, ascending=asc)
+
+            for c in ["AVG","OBP","SLG","OPS","xwOBA","BABIP"]:
+                if c in df_ll.columns:
+                    df_ll[c] = pd.to_numeric(df_ll[c], errors="coerce").round(3)
+            for c in ["wRC+","HR","R","RBI","SB","G","PA"]:
+                if c in df_ll.columns:
+                    df_ll[c] = pd.to_numeric(df_ll[c], errors="coerce")
+            for c in ["K%","BB%","Barrel%"]:
+                if c in df_ll.columns:
+                    df_ll[c] = pd.to_numeric(df_ll[c], errors="coerce").round(1)
+
+            # Color wRC+ column
+            def _wrc_color(val):
+                try:
+                    v = float(val)
+                    if v >= 140: return "color:#21C354;font-weight:bold"
+                    if v >= 115: return "color:#21C354"
+                    if v >= 95:  return "color:#FFA500"
+                    return "color:#FF4B4B"
+                except: return ""
+
+            styled_ll = df_ll[h_show].head(50).style
+            if "wRC+" in h_show:
+                styled_ll = styled_ll.map(_wrc_color, subset=["wRC+"])
+            if "AVG" in h_show:
+                styled_ll = styled_ll.format({"AVG":"{:.3f}","OBP":"{:.3f}",
+                                               "SLG":"{:.3f}","xwOBA":"{:.3f}"}, na_rep="—")
+            st.dataframe(styled_ll, use_container_width=True, hide_index=True, height=520)
+
+        elif ll_type == "Pitchers" and not pit26.empty:
+            df_ll = pit26.copy()
+            ip_col = "IP" if "IP" in df_ll.columns else "G"
+            df_ll  = df_ll[pd.to_numeric(df_ll.get(ip_col, 0), errors="coerce") >= ll_min]
+
+            p_show = [c for c in ["Name","Team","G","GS","IP","W","L","SV","ERA","WHIP",
+                                   "FIP","xFIP","K%","BB%","K/9","BB/9","H/9",
+                                   "SwStr%","GB%","HR/9","WAR"]
+                      if c in df_ll.columns]
+
+            if ll_sort in df_ll.columns:
+                asc = ll_sort in ["ERA","WHIP","FIP","xFIP","BB%","HR/9"]
+                df_ll = df_ll.sort_values(ll_sort, ascending=asc)
+
+            for c in ["ERA","WHIP","FIP","xFIP","K%","BB%","SwStr%","GB%"]:
+                if c in df_ll.columns:
+                    df_ll[c] = pd.to_numeric(df_ll[c], errors="coerce").round(2)
+
+            def _era_color(val):
+                try:
+                    v = float(val)
+                    if v < 2.5:  return "color:#21C354;font-weight:bold"
+                    if v < 3.5:  return "color:#21C354"
+                    if v < 4.5:  return "color:#FFA500"
+                    return "color:#FF4B4B"
+                except: return ""
+
+            styled_lp = df_ll[p_show].head(50).style
+            if "ERA" in p_show:
+                styled_lp = styled_lp.map(_era_color, subset=["ERA"])
+            st.dataframe(styled_lp, use_container_width=True, hide_index=True, height=520)
+
+    # ── TAB 2: MY ROSTER LIVE ────────────────────────────────────────
+    with ls_tab2:
+        st.markdown("#### 👥 My Roster — 2026 Live Stats")
+
+        roster_data_ls = st.session_state.get("yahoo_roster_data", {})
+        if "error" in roster_data_ls or not roster_data_ls:
+            st.info("Load your Yahoo roster first from the **🏆 My Yahoo League** → **👥 My Roster** tab, then return here.")
+        else:
+            # Parse roster names
+            roster_names_ls = []
+            try:
+                entries_ls = roster_data_ls["fantasy_content"]["team"][1]["roster"]["0"]["players"]
+                for k, v in entries_ls.items():
+                    if k == "count": continue
+                    p0 = v["player"][0]
+                    name_ = next((x["name"]["full"] for x in p0 if isinstance(x,dict) and "name" in x), "")
+                    pos_  = next((x["display_position"] for x in p0 if isinstance(x,dict) and "display_position" in x), "")
+                    team_ = next((x["editorial_team_abbr"] for x in p0 if isinstance(x,dict) and "editorial_team_abbr" in x), "")
+                    is_p  = any(x in pos_ for x in ["SP","RP","P"])
+                    if name_:
+                        roster_names_ls.append({"name": name_, "pos": pos_, "team": team_, "is_p": is_p})
+            except Exception:
+                pass
+
+            if not roster_names_ls:
+                st.warning("Could not parse roster.")
+            else:
+                # Range selector
+                rng_opt = st.radio("Time range", ["Season","Last 14 days","Last 7 days"],
+                                    horizontal=True, key="roster_live_range")
+
+                hitters_ls = [p for p in roster_names_ls if not p["is_p"]]
+                pitchers_ls = [p for p in roster_names_ls if p["is_p"]]
+
+                # Match names against live data (flexible matching)
+                def _match_name(name, df):
+                    if df.empty or "Name" not in df.columns: return None
+                    # Try exact
+                    m = df[df["Name"].str.lower() == name.lower()]
+                    if not m.empty: return m.iloc[0]
+                    # Try last name
+                    last = name.split()[-1].lower()
+                    m = df[df["Name"].str.lower().str.contains(last, na=False)]
+                    if len(m) == 1: return m.iloc[0]
+                    return None
+
+                if rng_opt == "Season":
+                    bat_src = bat26
+                    pit_src = pit26
+                elif rng_opt == "Last 14 days":
+                    with st.spinner("Loading last 14 days..."):
+                        bat_src = _live_bat_range(two_wk_ago, today_str)
+                        pit_src = _live_pit_range(two_wk_ago, today_str)
+                else:
+                    with st.spinner("Loading last 7 days..."):
+                        bat_src = _live_bat_range(wk_ago, today_str)
+                        pit_src = _live_pit_range(wk_ago, today_str)
+
+                # Build hitter table
+                h_rows = []
+                for p in hitters_ls:
+                    row = _match_name(p["name"], bat_src)
+                    r = {"Name": p["name"], "Pos": p["pos"], "Team": p["team"]}
+                    if row is not None:
+                        for c in ["G","PA","HR","R","RBI","SB","AVG","OBP","SLG","wRC+","xwOBA","Barrel%","K%","BABIP"]:
+                            r[c] = row.get(c, "—") if c in row.index else "—"
+                        # Hot/Cold badge based on wRC+
+                        wrc = float(row.get("wRC+", 100) or 100) if "wRC+" in row.index else 100
+                        r["Status"] = ("🔥 Hot" if wrc >= 130 else
+                                       "✅ Solid" if wrc >= 100 else
+                                       "❄️ Cold" if wrc < 75 else "➡️ Avg")
+                    else:
+                        r["Status"] = "⚠️ No data"
+                    h_rows.append(r)
+
+                p_rows = []
+                for p in pitchers_ls:
+                    row = _match_name(p["name"], pit_src)
+                    r = {"Name": p["name"], "Pos": p["pos"], "Team": p["team"]}
+                    if row is not None:
+                        for c in ["G","GS","IP","W","SV","ERA","WHIP","FIP","K%","BB%","SwStr%","WAR"]:
+                            r[c] = row.get(c, "—") if c in row.index else "—"
+                        era = float(row.get("ERA", 4.5) or 4.5) if "ERA" in row.index else 4.5
+                        r["Status"] = ("🔥 Ace" if era < 2.5 else
+                                       "✅ Good" if era < 3.5 else
+                                       "➡️ Avg"  if era < 4.5 else
+                                       "❄️ Struggling")
+                    else:
+                        r["Status"] = "⚠️ No data"
+                    p_rows.append(r)
+
+                def _status_color(val):
+                    v = str(val)
+                    if "Hot" in v or "Ace" in v: return "color:#21C354;font-weight:bold"
+                    if "Solid" in v or "Good" in v: return "color:#21C354"
+                    if "Cold" in v or "Struggling" in v: return "color:#FF4B4B"
+                    if "No data" in v: return "color:#888888"
+                    return "color:#FFA500"
+
+                if h_rows:
+                    st.markdown("**⚾ Hitters**")
+                    hdf = pd.DataFrame(h_rows)
+                    num_h = [c for c in ["HR","R","RBI","SB","AVG","OBP","SLG","wRC+","xwOBA","Barrel%","K%","BABIP"] if c in hdf.columns]
+                    for c in num_h:
+                        hdf[c] = pd.to_numeric(hdf[c], errors="coerce")
+                    fmt_h = {c: "{:.3f}" for c in ["AVG","OBP","SLG","xwOBA","BABIP"] if c in hdf.columns}
+                    styled_hdf = hdf.style.map(_status_color, subset=["Status"])
+                    if fmt_h: styled_hdf = styled_hdf.format(fmt_h, na_rep="—")
+                    if "wRC+" in hdf.columns:
+                        styled_hdf = styled_hdf.background_gradient(subset=["wRC+"], cmap="RdYlGn", vmin=60, vmax=160)
+                    st.dataframe(styled_hdf, use_container_width=True, hide_index=True)
+
+                if p_rows:
+                    st.markdown("**🎯 Pitchers**")
+                    pdf = pd.DataFrame(p_rows)
+                    num_p = [c for c in ["IP","ERA","WHIP","FIP","K%","BB%","SwStr%","WAR"] if c in pdf.columns]
+                    for c in num_p:
+                        pdf[c] = pd.to_numeric(pdf[c], errors="coerce")
+                    styled_pdf = pdf.style.map(_status_color, subset=["Status"])
+                    if "ERA" in pdf.columns:
+                        styled_pdf = styled_pdf.background_gradient(subset=["ERA"], cmap="RdYlGn_r", vmin=2.0, vmax=6.0)
+                    st.dataframe(styled_pdf, use_container_width=True, hide_index=True)
+
+    # ── TAB 3: STREAMER FINDER ───────────────────────────────────────
+    with ls_tab3:
+        st.markdown("#### 🎯 2026 Pitcher Streamer Finder")
+        st.caption(
+            "Ranks all 2026 pitchers by streaming value: "
+            "**ERA/FIP quality (35%)** · **K rate (25%)** · **Opponent weakness this week (20%)** · **Recent form L14 days (20%)**"
+        )
+
+        sf_c1, sf_c2, sf_c3 = st.columns(3)
+        sf_min_gs  = sf_c1.number_input("Min GS 2026", 0, 20, 2, key="sf_min_gs")
+        sf_max_era = sf_c2.number_input("Max ERA filter", 2.0, 8.0, 5.5, 0.5, key="sf_max_era")
+        sf_role    = sf_c3.selectbox("Role", ["All","SP only","RP only"], key="sf_role")
+
+        if st.button("🔄 Refresh Streamers", key="btn_sf_refresh"):
+            st.cache_data.clear()
+
+        if pit26.empty:
+            st.info("Pitching data not available yet.")
+        else:
+            sp_df = pit26.copy()
+
+            # Filter by role
+            if sf_role == "SP only" and "GS" in sp_df.columns:
+                sp_df = sp_df[pd.to_numeric(sp_df["GS"], errors="coerce") >= sf_min_gs]
+            elif sf_role == "RP only" and "GS" in sp_df.columns:
+                sp_df = sp_df[pd.to_numeric(sp_df["GS"], errors="coerce") < 2]
+            elif sf_min_gs > 0 and "GS" in sp_df.columns:
+                sp_df = sp_df[pd.to_numeric(sp_df["GS"], errors="coerce") >= sf_min_gs]
+
+            # Filter by ERA
+            if "ERA" in sp_df.columns:
+                sp_df = sp_df[pd.to_numeric(sp_df["ERA"], errors="coerce") <= sf_max_era]
+
+            # Load last 14 days for recent form
+            with st.spinner("Loading recent form (L14)..."):
+                pit_l14 = _live_pit_range(two_wk_ago, today_str)
+
+            # Opponent quality this week
+            TEAM_WRCPLUS = {
+                "LAD":112,"NYY":108,"ATL":107,"HOU":106,"PHI":103,"BOS":102,
+                "BAL":101,"SEA":100,"CIN":99,"MIN":99,"SF":98,"MIL":97,
+                "STL":96,"TOR":96,"CLE":95,"TB":94,"TEX":93,"NYM":93,
+                "ARI":92,"KC":91,"DET":90,"SD":90,"OAK":89,"WSH":88,
+                "PIT":87,"MIA":86,"COL":85,"LAA":84,"CWS":83,"CHC":97,
+            }
+
+            # Fetch this week's schedule
+            week_start_sf = today26 - _dt26.timedelta(days=today26.weekday())
+            team_opp_wrc = {}
+            try:
+                import requests as _rsf
+                for d in range(7):
+                    day_d = (week_start_sf + _dt26.timedelta(days=d)).strftime("%Y-%m-%d")
+                    r_sf = _rsf.get(
+                        "https://statsapi.mlb.com/api/v1/schedule",
+                        params={"sportId":1,"date":day_d,
+                                "fields":"dates,games,teams,abbreviation"},
+                        timeout=8
+                    )
+                    if r_sf.status_code == 200:
+                        for gm in r_sf.json().get("dates",[{}])[0].get("games",[]):
+                            for side in ["away","home"]:
+                                ab  = gm.get("teams",{}).get(side,{}).get("team",{}).get("abbreviation","")
+                                opp_side = "home" if side=="away" else "away"
+                                opp_ab = gm.get("teams",{}).get(opp_side,{}).get("team",{}).get("abbreviation","")
+                                if ab:
+                                    if ab not in team_opp_wrc: team_opp_wrc[ab] = []
+                                    team_opp_wrc[ab].append(TEAM_WRCPLUS.get(opp_ab, 95))
+            except Exception:
+                pass
+
+            stream_rows = []
+            for _, row in sp_df.iterrows():
+                name  = row.get("Name","")
+                team  = row.get("Team","")
+                era   = float(row.get("ERA", 4.50) or 4.50) if pd.notna(row.get("ERA")) else 4.50
+                fip   = float(row.get("FIP", 4.00) or 4.00) if pd.notna(row.get("FIP")) else era
+                xfip  = float(row.get("xFIP", fip) or fip) if pd.notna(row.get("xFIP")) else fip
+                kpct  = float(row.get("K%",  20.0) or 20.0) if pd.notna(row.get("K%")) else 20.0
+                bbpct = float(row.get("BB%",  8.0)  or 8.0)  if pd.notna(row.get("BB%")) else 8.0
+                gs    = int(float(row.get("GS", 0)  or 0))   if pd.notna(row.get("GS")) else 0
+                ip    = float(row.get("IP",  0)    or 0)     if pd.notna(row.get("IP")) else 0
+                war   = float(row.get("WAR", 0)    or 0)     if pd.notna(row.get("WAR")) else 0
+
+                # Component 1 (35%): ERA/FIP quality
+                era_score  = max(0, min(1, (6.0 - era)  / 4.0))
+                fip_score  = max(0, min(1, (6.0 - fip)  / 4.0))
+                xfip_score = max(0, min(1, (6.0 - xfip) / 4.0))
+                quality_score = era_score*0.35 + fip_score*0.35 + xfip_score*0.30
+
+                # Component 2 (25%): K rate
+                k_score = max(0, min(1, (kpct - 10) / 25))
+
+                # Component 3 (20%): Opponent weakness this week
+                opps = team_opp_wrc.get(team, [])
+                avg_opp_wrc = sum(opps)/len(opps) if opps else 95
+                opp_score = max(0, min(1, (105 - avg_opp_wrc) / 20))
+                games_this_week = len(opps)
+
+                # Component 4 (20%): Recent form L14 vs season ERA
+                recent_era = era  # default to season
+                if not pit_l14.empty and "Name" in pit_l14.columns:
+                    m14 = pit_l14[pit_l14["Name"].str.lower() == str(name).lower()]
+                    if not m14.empty and "ERA" in m14.columns:
+                        re = pd.to_numeric(m14.iloc[0].get("ERA"), errors="coerce")
+                        if pd.notna(re):
+                            recent_era = float(re)
+                form_score = max(0, min(1, (6.0 - recent_era) / 4.0))
+                # Bonus if recent ERA better than season ERA (trending up)
+                trend = "📈 Trending up" if recent_era < era - 0.5 else (
+                        "📉 Trending down" if recent_era > era + 0.5 else "➡️ Steady")
+
+                composite = (quality_score * 0.35 +
+                             k_score       * 0.25 +
+                             opp_score     * 0.20 +
+                             form_score    * 0.20)
+
+                opps_str = ", ".join(set(
+                    team for wrc_list in [team_opp_wrc.get(team,[])]
+                    for team in [k for k,v in TEAM_WRCPLUS.items()
+                                 if v in team_opp_wrc.get(team,[])][:3]
+                )) or "—"
+
+                # Get opp abbreviations from schedule data
+                opp_teams_this_wk = []
+                try:
+                    import requests as _r2
+                    for d in range(7):
+                        day_d2 = (week_start_sf + _dt26.timedelta(days=d)).strftime("%Y-%m-%d")
+                        r2 = _r2.get(
+                            "https://statsapi.mlb.com/api/v1/schedule",
+                            params={"sportId":1,"date":day_d2,
+                                    "fields":"dates,games,teams,abbreviation"},
+                            timeout=5
+                        )
+                        if r2.status_code == 200:
+                            for gm in r2.json().get("dates",[{}])[0].get("games",[]):
+                                for s in ["away","home"]:
+                                    ab2 = gm.get("teams",{}).get(s,{}).get("team",{}).get("abbreviation","")
+                                    os2 = "home" if s=="away" else "away"
+                                    ob2 = gm.get("teams",{}).get(os2,{}).get("team",{}).get("abbreviation","")
+                                    if ab2 == team:
+                                        opp_teams_this_wk.append(ob2)
+                except Exception:
+                    pass
+                opps_disp = ", ".join(opp_teams_this_wk[:3]) if opp_teams_this_wk else "—"
+
+                stream_rows.append({
+                    "Name":         name,
+                    "Team":         team,
+                    "GS":           gs,
+                    "IP":           round(ip, 1),
+                    "ERA":          round(era, 2),
+                    "FIP":          round(fip, 2),
+                    "xFIP":         round(xfip, 2),
+                    "K%":           round(kpct, 1),
+                    "BB%":          round(bbpct, 1),
+                    "L14 ERA":      round(recent_era, 2),
+                    "Trend":        trend,
+                    "Games/Wk":     games_this_week,
+                    "Opponents":    opps_disp,
+                    "Opp wRC+":     round(avg_opp_wrc, 0),
+                    "Stream Score": round(composite, 3),
+                    "Rec":          ("🔥 Must Start"  if composite >= 0.72 else
+                                     "✅ Strong Start" if composite >= 0.58 else
+                                     "📋 Spot Start"   if composite >= 0.44 else
+                                     "⚠️ Risky"),
+                })
+
+            if stream_rows:
+                sdf_sf = pd.DataFrame(stream_rows).sort_values("Stream Score", ascending=False)
+
+                def _rec_sf(val):
+                    v = str(val)
+                    if "Must"   in v: return "color:#21C354;font-weight:bold"
+                    if "Strong" in v: return "color:#21C354"
+                    if "Spot"   in v: return "color:#FFA500"
+                    return "color:#FF4B4B"
+
+                def _trend_sf(val):
+                    v = str(val)
+                    if "up"   in v: return "color:#21C354"
+                    if "down" in v: return "color:#FF4B4B"
+                    return "color:#FFA500"
+
+                st.dataframe(
+                    sdf_sf.style
+                        .map(_rec_sf,   subset=["Rec"])
+                        .map(_trend_sf, subset=["Trend"])
+                        .background_gradient(subset=["Stream Score"], cmap="RdYlGn", vmin=0.3, vmax=0.85)
+                        .background_gradient(subset=["ERA"], cmap="RdYlGn_r", vmin=2.0, vmax=6.0)
+                        .format({"Stream Score": "{:.3f}", "ERA": "{:.2f}",
+                                 "FIP": "{:.2f}", "xFIP": "{:.2f}",
+                                 "K%": "{:.1f}%", "BB%": "{:.1f}%",
+                                 "L14 ERA": "{:.2f}"}),
+                    use_container_width=True, hide_index=True, height=560
+                )
+                st.caption(
+                    "**Stream Score:** ERA/FIP quality (35%) · K rate (25%) · "
+                    "Opponent batting weakness (20%) · Recent L14 form (20%)"
+                )
+
+    # ── TAB 4: HOT/COLD REPORT ──────────────────────────────────────
+    with ls_tab4:
+        st.markdown("#### ⚡ Hot/Cold Report — Last 7 Days vs Season")
+        st.caption("Players whose recent performance diverges most from their season average. Min 15 PA (hitters) / 3 IP (pitchers).")
+
+        hc_type = st.radio("", ["🔥 Hot Hitters","❄️ Cold Hitters",
+                                 "🔥 Hot Pitchers","❄️ Cold Pitchers"],
+                            horizontal=True, key="hc_type")
+
+        with st.spinner("Loading last 7 days..."):
+            bat_l7  = _live_bat_range(wk_ago, today_str)
+            pit_l7  = _live_pit_range(wk_ago, today_str)
+
+        if "Hitter" in hc_type:
+            if bat26.empty or bat_l7.empty:
+                st.info("Batting data not available.")
+            else:
+                # Merge season + L7 on Name
+                b26  = bat26[["Name","Team","PA","HR","R","RBI","SB","AVG","OBP","SLG","wRC+","xwOBA"]].copy()
+                bl7  = bat_l7[["Name","PA","HR","R","RBI","SB","AVG","OBP","SLG","wRC+"]].copy() if not bat_l7.empty else pd.DataFrame()
+
+                if not bl7.empty:
+                    bl7.columns = ["Name","PA_L7","HR_L7","R_L7","RBI_L7","SB_L7",
+                                   "AVG_L7","OBP_L7","SLG_L7","wRC+_L7"]
+                    merged = b26.merge(bl7, on="Name", how="inner")
+                    for c in ["PA","PA_L7","wRC+","wRC+_L7","AVG","AVG_L7"]:
+                        if c in merged.columns:
+                            merged[c] = pd.to_numeric(merged[c], errors="coerce")
+
+                    merged = merged[merged["PA_L7"] >= 15]
+                    merged["wRC+ Δ"] = merged["wRC+_L7"] - merged["wRC+"]
+                    merged["AVG Δ"]  = (merged["AVG_L7"] - merged["AVG"]).round(3)
+
+                    if "Hot" in hc_type:
+                        result = merged.sort_values("wRC+ Δ", ascending=False).head(25)
+                    else:
+                        result = merged.sort_values("wRC+ Δ", ascending=True).head(25)
+
+                    show_cols = [c for c in ["Name","Team","PA_L7","HR_L7","AVG_L7",
+                                              "OBP_L7","SLG_L7","wRC+_L7","wRC+ Δ","AVG Δ"]
+                                 if c in result.columns]
+
+                    def _delta_color(val):
+                        try:
+                            v = float(val)
+                            if v >= 30:  return "color:#21C354;font-weight:bold"
+                            if v >= 10:  return "color:#21C354"
+                            if v <= -30: return "color:#FF4B4B;font-weight:bold"
+                            if v <= -10: return "color:#FF4B4B"
+                            return "color:#FFA500"
+                        except: return ""
+
+                    fmt_hc = {}
+                    for c in ["AVG_L7","OBP_L7","SLG_L7","AVG Δ"]:
+                        if c in result.columns: fmt_hc[c] = "{:.3f}"
+
+                    styled_hc = result[show_cols].style.map(_delta_color, subset=["wRC+ Δ"])
+                    if fmt_hc: styled_hc = styled_hc.format(fmt_hc, na_rep="—")
+                    st.dataframe(styled_hc, use_container_width=True, hide_index=True)
+                    st.caption("Δ = L7 days minus season average. Large positive = running hot.")
+                else:
+                    st.info("Last-7-day data not available yet.")
+
+        else:  # Pitcher hot/cold
+            if pit26.empty or pit_l7.empty:
+                st.info("Pitching data not available.")
+            else:
+                p26 = pit26[["Name","Team","IP","GS","ERA","WHIP","FIP","K%","BB%","WAR"]].copy()
+                pl7 = pit_l7[["Name","IP","ERA","WHIP","K%","BB%"]].copy() if not pit_l7.empty else pd.DataFrame()
+
+                if not pl7.empty:
+                    pl7.columns = ["Name","IP_L7","ERA_L7","WHIP_L7","K%_L7","BB%_L7"]
+                    merged_p = p26.merge(pl7, on="Name", how="inner")
+                    for c in ["IP_L7","ERA","ERA_L7","WHIP","WHIP_L7"]:
+                        if c in merged_p.columns:
+                            merged_p[c] = pd.to_numeric(merged_p[c], errors="coerce")
+
+                    merged_p = merged_p[merged_p["IP_L7"] >= 3]
+                    merged_p["ERA Δ"]  = (merged_p["ERA_L7"]  - merged_p["ERA"]).round(2)
+                    merged_p["WHIP Δ"] = (merged_p["WHIP_L7"] - merged_p["WHIP"]).round(3)
+
+                    # Hot pitchers = ERA dropped (negative Δ = better)
+                    if "Hot" in hc_type:
+                        result_p = merged_p.sort_values("ERA Δ", ascending=True).head(25)
+                    else:
+                        result_p = merged_p.sort_values("ERA Δ", ascending=False).head(25)
+
+                    show_p = [c for c in ["Name","Team","IP_L7","ERA_L7","WHIP_L7",
+                                           "K%_L7","ERA Δ","WHIP Δ"]
+                              if c in result_p.columns]
+
+                    def _era_delta(val):
+                        try:
+                            v = float(val)
+                            if v <= -1.5: return "color:#21C354;font-weight:bold"
+                            if v <= -0.5: return "color:#21C354"
+                            if v >= 1.5:  return "color:#FF4B4B;font-weight:bold"
+                            if v >= 0.5:  return "color:#FF4B4B"
+                            return "color:#FFA500"
+                        except: return ""
+
+                    styled_hp = result_p[show_p].style.map(_era_delta, subset=["ERA Δ"])
+                    st.dataframe(styled_hp, use_container_width=True, hide_index=True)
+                    st.caption("ERA Δ = L7 ERA minus season ERA. Negative = pitching better recently.")
+                else:
+                    st.info("Last-7-day pitching data not available yet.")
+
 if page == "🏆 My Yahoo League":
     import requests as _req
     import base64 as _b64
@@ -6080,3 +6699,1646 @@ if page == "🏆 My Yahoo League":
                 else:
                     st.info("Click **🎲 Simulate This Week's Matchup** to run the simulation. "
                             "Requires the season to have started and a current week matchup.")
+
+# ═══════════════════════════════════════════════════════
+# PAGE: 🔬 Edge Finder
+# ═══════════════════════════════════════════════════════
+if page == "🔬 Edge Finder":
+    st.title("🔬 Edge Finder")
+    st.caption(
+        "Live 2026 data · Yahoo free agents · Statcast analytics · "
+        "Built to find the edges everyone else is missing."
+    )
+
+    import datetime as _dt_ef
+    import requests as _ref
+
+    # ── Check Yahoo connected ────────────────────────────────────────
+    _yahoo_ok = bool(st.session_state.get("yahoo_token") and
+                     st.session_state.get("yahoo_league_key"))
+
+    # ── Shared cached loaders ────────────────────────────────────────
+    @st.cache_data(ttl=10800, show_spinner=False)
+    def _ef_bat(qual=1):
+        try:
+            from pybaseball import batting_stats
+            return batting_stats(2026, qual=qual)
+        except: return pd.DataFrame()
+
+    @st.cache_data(ttl=10800, show_spinner=False)
+    def _ef_pit(qual=1):
+        try:
+            from pybaseball import pitching_stats
+            return pitching_stats(2026, qual=qual)
+        except: return pd.DataFrame()
+
+    @st.cache_data(ttl=7200, show_spinner=False)
+    def _ef_bat_range(s, e):
+        try:
+            from pybaseball import batting_stats_range
+            return batting_stats_range(s, e)
+        except: return pd.DataFrame()
+
+    @st.cache_data(ttl=7200, show_spinner=False)
+    def _ef_pit_range(s, e):
+        try:
+            from pybaseball import pitching_stats_range
+            return pitching_stats_range(s, e)
+        except: return pd.DataFrame()
+
+    @st.cache_data(ttl=86400, show_spinner=False)
+    def _ef_statcast_expected_bat(yr=2026):
+        try:
+            from pybaseball import statcast_batter_expected_stats
+            return statcast_batter_expected_stats(yr, minPA=20)
+        except: return pd.DataFrame()
+
+    @st.cache_data(ttl=86400, show_spinner=False)
+    def _ef_statcast_expected_pit(yr=2026):
+        try:
+            from pybaseball import statcast_pitcher_expected_stats
+            return statcast_pitcher_expected_stats(yr, minPA=20)
+        except: return pd.DataFrame()
+
+    @st.cache_data(ttl=86400, show_spinner=False)
+    def _ef_player_id(last, first):
+        try:
+            from pybaseball import playerid_lookup
+            df = playerid_lookup(last, first)
+            if not df.empty and 'key_mlbam' in df.columns:
+                return int(df.iloc[0]['key_mlbam'])
+        except: pass
+        return None
+
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def _ef_schedule(date_str):
+        try:
+            r = _ref.get(
+                "https://statsapi.mlb.com/api/v1/schedule",
+                params={"sportId":1,"date":date_str,
+                        "hydrate":"probablePitcher,lineups",
+                        "fields":"dates,games,teams,probablePitcher,lineups,fullName,pitchHand,abbreviation,id"},
+                timeout=12)
+            if r.status_code == 200:
+                return r.json().get("dates",[{}])[0].get("games",[])
+        except: pass
+        return []
+
+    _today_ef  = _dt_ef.date.today()
+    _7d_ago    = (_today_ef - _dt_ef.timedelta(days=7)).strftime("%Y-%m-%d")
+    _14d_ago   = (_today_ef - _dt_ef.timedelta(days=14)).strftime("%Y-%m-%d")
+    _today_str = _today_ef.strftime("%Y-%m-%d")
+
+    # load base data
+    with st.spinner("Loading 2026 live stats..."):
+        _bat26 = _ef_bat(qual=1)
+        _pit26 = _ef_pit(qual=1)
+
+    _data_ok = not _bat26.empty or not _pit26.empty
+
+    ef_tab1, ef_tab2, ef_tab3, ef_tab4, ef_tab5 = st.tabs([
+        "💎 FA Gems",
+        "📊 Daily Lineup Intel",
+        "⚔️ Batter vs Pitcher",
+        "📈 Regression Watch",
+        "🚨 Waiver Wire Ranker",
+    ])
+
+    # helper: fuzzy name match
+    def _ef_match(name, df):
+        if df.empty or "Name" not in df.columns: return None
+        m = df[df["Name"].str.lower() == name.lower()]
+        if not m.empty: return m.iloc[0]
+        last = name.split()[-1].lower()
+        m2 = df[df["Name"].str.lower().str.endswith(last)]
+        return m2.iloc[0] if len(m2)==1 else None
+
+    def _clr_good(val, lo, hi, invert=False):
+        try:
+            v = float(val)
+            pct = (v-lo)/(hi-lo) if hi!=lo else 0.5
+            pct = max(0,min(1, 1-pct if invert else pct))
+            if pct>=0.75: return "color:#21C354;font-weight:bold"
+            if pct>=0.50: return "color:#21C354"
+            if pct>=0.30: return "color:#FFA500"
+            return "color:#FF4B4B"
+        except: return ""
+
+    # ── TAB 1: FA GEMS ──────────────────────────────────────────────
+    with ef_tab1:
+        st.markdown("#### 💎 Free Agent Gems — Undervalued Players")
+        st.caption(
+            "Pulls your Yahoo free agent list, scores every player against 2026 live stats + "
+            "Statcast expected stats. Surfaces high-xwOBA/low-ERA players being left on the wire."
+        )
+
+        if not _yahoo_ok:
+            st.warning("🔗 Connect to **My Yahoo League** first to load your free agent pool.")
+        else:
+            gem_c1, gem_c2, gem_c3 = st.columns(3)
+            gem_pos  = gem_c1.selectbox("Position", ["All Hitters","SP","RP","All Pitchers"], key="gem_pos")
+            gem_min  = gem_c2.number_input("Min PA / IP in 2026", 5, 200, 10, key="gem_min")
+            gem_n    = gem_c3.number_input("Max FA to analyze", 10, 100, 50, key="gem_n")
+
+            if st.button("🔍 Find Gems", type="primary", key="btn_gems"):
+                st.session_state.pop("ef_fa_gems", None)
+
+            if "ef_fa_gems" not in st.session_state:
+                with st.spinner("Fetching Yahoo free agents..."):
+                    pos_map = {"All Hitters":"B","SP":"SP","RP":"RP","All Pitchers":"P"}
+                    ypos = pos_map.get(gem_pos,"B")
+                    _lk  = st.session_state["yahoo_league_key"]
+
+                    def _ef_api(path):
+                        import requests as _rr
+                        tok = st.session_state.get("yahoo_token",{})
+                        if not tok: return {"error":"no token"}
+                        r = _rr.get(
+                            f"https://fantasysports.yahooapis.com/fantasy/v2{path}?format=json",
+                            headers={"Authorization": f"Bearer {tok.get('access_token','')}",
+                                     "Accept":"application/json"},
+                            timeout=15)
+                        if r.status_code == 200:
+                            return r.json()
+                        return {"error": f"HTTP {r.status_code}"}
+
+                    fa_resp = _ef_api(
+                        f"/league/{_lk}/players;status=FA;position={ypos}"
+                        f";sort=AR;count={gem_n}"
+                    )
+                    fa_players = []
+                    try:
+                        plist = fa_resp["fantasy_content"]["league"][1]["players"]
+                        for k, v in plist.items():
+                            if k=="count": continue
+                            p0   = v["player"][0]
+                            name = next((x["name"]["full"] for x in p0 if isinstance(x,dict) and "name" in x), "")
+                            pos  = next((x["display_position"] for x in p0 if isinstance(x,dict) and "display_position" in x), "")
+                            team = next((x["editorial_team_abbr"] for x in p0 if isinstance(x,dict) and "editorial_team_abbr" in x), "")
+                            pct  = next((float(x.get("percent_owned",{}).get("value",0)) for x in p0 if isinstance(x,dict) and "percent_owned" in x), 0.0)
+                            fa_players.append({"name":name,"pos":pos,"team":team,"pct_owned":pct})
+                    except: pass
+
+                is_pit_gem = gem_pos in ["SP","RP","All Pitchers"]
+
+                # Load Statcast expected stats
+                with st.spinner("Loading Statcast expected stats..."):
+                    xstats_bat = _ef_statcast_expected_bat(2026) if not is_pit_gem else pd.DataFrame()
+                    xstats_pit = _ef_statcast_expected_pit(2026) if is_pit_gem else pd.DataFrame()
+
+                # Load L14 data for trend
+                with st.spinner("Loading recent form (L14)..."):
+                    _l14_bat = _ef_bat_range(_14d_ago, _today_str) if not is_pit_gem else pd.DataFrame()
+                    _l14_pit = _ef_pit_range(_14d_ago, _today_str) if is_pit_gem else pd.DataFrame()
+
+                gem_rows = []
+                for p in fa_players:
+                    r = {"Name":p["name"],"Pos":p["pos"],"Team":p["team"],"%Owned":p["pct_owned"]}
+
+                    if not is_pit_gem:
+                        row26 = _ef_match(p["name"], _bat26)
+                        if row26 is None: continue
+                        pa = float(row26.get("PA",0) or 0)
+                        if pa < gem_min: continue
+
+                        avg    = float(row26.get("AVG",   .250) or .250)
+                        obp    = float(row26.get("OBP",   .320) or .320)
+                        slg    = float(row26.get("SLG",   .400) or .400)
+                        wrc    = float(row26.get("wRC+",  100)  or 100)
+                        babip  = float(row26.get("BABIP", .300) or .300)
+                        xwoba  = float(row26.get("xwOBA", .320) or .320)
+                        barr   = float(row26.get("Barrel%",8.0) or 8.0)
+                        kpct   = float(row26.get("K%",    22.0) or 22.0)
+                        hr     = int(float(row26.get("HR", 0) or 0))
+                        sb     = int(float(row26.get("SB", 0) or 0))
+
+                        # xwOBA from Statcast (more accurate than FG)
+                        xwoba_sc = xwoba
+                        if not xstats_bat.empty and "last_name" in xstats_bat.columns:
+                            last_n = p["name"].split()[-1].lower()
+                            xm = xstats_bat[xstats_bat["last_name"].str.lower() == last_n]
+                            if not xm.empty and "xwoba" in xm.columns:
+                                xwoba_sc = float(xm.iloc[0]["xwoba"] or xwoba)
+
+                        # BABIP luck: career BABIP ~.300 — low BABIP + high xwOBA = buying opportunity
+                        babip_luck = babip - .300  # negative = unlucky
+                        xwoba_gap  = xwoba_sc - (obp + slg)*.35  # rough quality vs production gap
+
+                        # L14 trend
+                        l14_wrc = wrc
+                        if not _l14_bat.empty:
+                            rm = _ef_match(p["name"], _l14_bat)
+                            if rm is not None and "wRC+" in rm.index:
+                                l14_wrc = float(rm.get("wRC+", wrc) or wrc)
+
+                        # Gem score: reward high xwOBA, high barrel, low BABIP (unlucky), trending up
+                        xwoba_score  = max(0,min(1,(xwoba_sc-.270)/.130))
+                        barr_score   = min(1, barr/20)
+                        luck_bonus   = max(0, -babip_luck/.050)   # unlucky hitters get bonus
+                        trend_score  = max(0,min(1,(l14_wrc-70)/130))
+                        gem_score    = (xwoba_score*.40 + barr_score*.25 +
+                                        luck_bonus*.20  + trend_score*.15)
+
+                        r.update({
+                            "PA":pa,"HR":hr,"SB":sb,
+                            "AVG":round(avg,3),"OBP":round(obp,3),"SLG":round(slg,3),
+                            "wRC+":round(wrc,0),"xwOBA":round(xwoba_sc,3),
+                            "Barrel%":round(barr,1),"BABIP":round(babip,3),
+                            "BABIP Luck":round(babip_luck,3),
+                            "L14 wRC+":round(l14_wrc,0),
+                            "Trend": "📈" if l14_wrc>wrc+10 else ("📉" if l14_wrc<wrc-10 else "➡️"),
+                            "Gem Score":round(gem_score,3),
+                            "Rec": ("💎 Must Add" if gem_score>=.65 else
+                                    "✅ Strong"    if gem_score>=.50 else
+                                    "📋 Consider" if gem_score>=.35 else "⚠️ Skip")
+                        })
+                    else:
+                        row26 = _ef_match(p["name"], _pit26)
+                        if row26 is None: continue
+                        ip = float(row26.get("IP",0) or 0)
+                        if ip < gem_min: continue
+
+                        era   = float(row26.get("ERA", 4.5) or 4.5)
+                        fip   = float(row26.get("FIP", 4.0) or 4.0)
+                        xfip  = float(row26.get("xFIP",4.0) or 4.0)
+                        kpct  = float(row26.get("K%",  20)  or 20)
+                        bbpct = float(row26.get("BB%",  8)  or 8)
+                        war   = float(row26.get("WAR",  0)  or 0)
+                        gs    = int(float(row26.get("GS",0) or 0))
+
+                        # ERA-FIP gap: ERA>>FIP means ERA will come down (buy)
+                        era_fip_gap = era - fip
+
+                        # L14 form
+                        l14_era = era
+                        if not _l14_pit.empty:
+                            rm = _ef_match(p["name"], _l14_pit)
+                            if rm is not None and "ERA" in rm.index:
+                                l14_era = float(rm.get("ERA", era) or era)
+
+                        era_score  = max(0,min(1,(6.0-era)/4.0))
+                        fip_score  = max(0,min(1,(6.0-fip)/4.0))
+                        k_score    = min(1,(kpct-10)/25)
+                        luck_bonus = max(0, era_fip_gap/2.0)  # ERA will regress to FIP
+                        form_score = max(0,min(1,(6.0-l14_era)/4.0))
+                        gem_score  = (era_score*.25 + fip_score*.30 + k_score*.20 +
+                                      luck_bonus*.15 + form_score*.10)
+
+                        r.update({
+                            "IP":ip,"GS":gs,
+                            "ERA":round(era,2),"FIP":round(fip,2),"xFIP":round(xfip,2),
+                            "K%":round(kpct,1),"BB%":round(bbpct,1),"WAR":round(war,2),
+                            "ERA-FIP":round(era_fip_gap,2),
+                            "L14 ERA":round(l14_era,2),
+                            "Trend": "📈" if l14_era<era-0.5 else ("📉" if l14_era>era+0.5 else "➡️"),
+                            "Gem Score":round(gem_score,3),
+                            "Rec": ("💎 Must Add" if gem_score>=.65 else
+                                    "✅ Strong"    if gem_score>=.50 else
+                                    "📋 Consider" if gem_score>=.35 else "⚠️ Skip")
+                        })
+
+                    gem_rows.append(r)
+
+                gem_rows.sort(key=lambda x: -x.get("Gem Score",0))
+                st.session_state["ef_fa_gems"] = gem_rows
+
+            if "ef_fa_gems" in st.session_state:
+                gdf = pd.DataFrame(st.session_state["ef_fa_gems"])
+                if gdf.empty:
+                    st.info("No matching players found. Try lowering min PA/IP or expanding position filter.")
+                else:
+                    # Color functions
+                    def _gem_rec(val):
+                        v=str(val)
+                        if "Must"  in v: return "color:#21C354;font-weight:bold"
+                        if "Strong" in v: return "color:#21C354"
+                        if "Consider" in v: return "color:#FFA500"
+                        return "color:#888888"
+                    def _luck_color(val):
+                        try:
+                            v=float(val)
+                            if v<=-0.03: return "color:#21C354;font-weight:bold"  # unlucky = opportunity
+                            if v<=-0.01: return "color:#21C354"
+                            if v>=0.04:  return "color:#FF4B4B"   # lucky = regression risk
+                            return ""
+                        except: return ""
+
+                    num_fmt = {}
+                    for c in ["AVG","OBP","SLG","xwOBA","BABIP","BABIP Luck"]:
+                        if c in gdf.columns: num_fmt[c] = "{:.3f}"
+                    for c in ["ERA","FIP","xFIP","L14 ERA","ERA-FIP"]:
+                        if c in gdf.columns: num_fmt[c] = "{:.2f}"
+
+                    style_g = gdf.style.map(_gem_rec, subset=["Rec"])
+                    if "BABIP Luck" in gdf.columns:
+                        style_g = style_g.map(_luck_color, subset=["BABIP Luck"])
+                    if "Gem Score" in gdf.columns:
+                        style_g = style_g.background_gradient(subset=["Gem Score"], cmap="RdYlGn", vmin=0.2, vmax=0.8)
+                    if num_fmt:
+                        style_g = style_g.format(num_fmt, na_rep="—")
+
+                    st.dataframe(style_g, use_container_width=True, hide_index=True, height=500)
+                    st.caption(
+                        "**Gem Score:** xwOBA quality (40%) · Barrel% (25%) · BABIP luck/ERA-FIP gap (20%) · Recent trend (15%). "
+                        "Negative BABIP Luck = player is being unlucky → due for improvement. "
+                        "Positive ERA-FIP = pitcher ERA will likely drop."
+                    )
+
+    # ── TAB 2: DAILY LINEUP INTEL ────────────────────────────────────
+    with ef_tab2:
+        st.markdown("#### 📊 Daily Lineup Intel")
+        st.caption(
+            "Your roster players' today matchups with pitcher quality, "
+            "batter splits, and start/sit grades."
+        )
+
+        sel_dt_ef = st.date_input("Date", value=_today_ef, key="ef_date")
+        sel_dt_str = sel_dt_ef.strftime("%Y-%m-%d")
+
+        if st.button("🔄 Load Today's Intel", type="primary", key="btn_ef_intel"):
+            st.session_state.pop("ef_intel_data", None)
+
+        if "ef_intel_data" not in st.session_state:
+            with st.spinner("Fetching schedule + pitcher stats..."):
+                games_ef = _ef_schedule(sel_dt_str)
+
+                # Build team → probable pitcher map
+                pp_map = {}  # team_abbr → {name, hand, id}
+                MLB_TO_Y = {"SFG":"SF","SDP":"SD","KCR":"KC","TBR":"TB",
+                            "CHW":"CWS","WSN":"WSH","ARI":"ARI","LAD":"LAD"}
+                def _norm(ab): return MLB_TO_Y.get(ab,ab)
+
+                for g in games_ef:
+                    for side, opp_side in [("away","home"),("home","away")]:
+                        ab   = _norm(g.get("teams",{}).get(side,{}).get("team",{}).get("abbreviation",""))
+                        pp   = g.get("teams",{}).get(opp_side,{}).get("probablePitcher",{})
+                        if ab:
+                            pp_map[ab] = {
+                                "name": pp.get("fullName","TBD"),
+                                "hand": pp.get("pitchHand",{}).get("code","?"),
+                                "id":   pp.get("id"),
+                            }
+
+                st.session_state["ef_intel_data"] = {
+                    "games": games_ef, "pp_map": pp_map,
+                    "date": sel_dt_str
+                }
+
+        data_ef = st.session_state.get("ef_intel_data", {})
+        pp_map_ef = data_ef.get("pp_map", {})
+        games_ef  = data_ef.get("games", [])
+
+        if not games_ef:
+            st.info(f"No games found for {sel_dt_str}.")
+        else:
+            st.markdown(f"**{len(games_ef)} games · {sel_dt_str}**")
+
+            # Get my roster
+            roster_ef = []
+            rdata = st.session_state.get("yahoo_roster_data", {})
+            if "error" not in rdata and rdata:
+                try:
+                    ents = rdata["fantasy_content"]["team"][1]["roster"]["0"]["players"]
+                    for k,v in ents.items():
+                        if k=="count": continue
+                        p0   = v["player"][0]
+                        name = next((x["name"]["full"] for x in p0 if isinstance(x,dict) and "name" in x),"")
+                        pos  = next((x["display_position"] for x in p0 if isinstance(x,dict) and "display_position" in x),"")
+                        tm   = next((x["editorial_team_abbr"] for x in p0 if isinstance(x,dict) and "editorial_team_abbr" in x),"")
+                        is_p = any(x in pos for x in ["SP","RP"])
+                        roster_ef.append({"name":name,"pos":pos,"team":tm,"is_p":is_p})
+                except: pass
+
+            if not roster_ef:
+                st.info("Load your Yahoo roster from **🏆 My Yahoo League → 👥 My Roster** first.")
+            else:
+                intel_rows = []
+                for p in roster_ef:
+                    pp = pp_map_ef.get(p["team"], {})
+                    pp_name = pp.get("name","No game today")
+                    pp_hand = pp.get("hand","?")
+                    has_game = pp_name != "No game today"
+
+                    row = {
+                        "Player": p["name"], "Pos": p["pos"], "Team": p["team"],
+                        "Game Today": "✅" if has_game else "❌",
+                    }
+
+                    if p["is_p"]:
+                        # Pitcher: show their own 2026 stats + opp team quality
+                        r26 = _ef_match(p["name"], _pit26)
+                        row["ERA"]  = round(float(r26.get("ERA", 4.5) or 4.5), 2) if r26 is not None else "—"
+                        row["FIP"]  = round(float(r26.get("FIP", 4.0) or 4.0), 2) if r26 is not None else "—"
+                        row["K%"]   = round(float(r26.get("K%",  20)  or 20),  1) if r26 is not None else "—"
+                        row["WHIP"] = round(float(r26.get("WHIP",1.3) or 1.3), 2) if r26 is not None else "—"
+
+                        # Grade
+                        era_v = float(row["ERA"]) if isinstance(row["ERA"], (int,float)) else 4.5
+                        row["Grade"] = ("A 🔥" if era_v<2.8 else "B ✅" if era_v<3.5 else
+                                        "C ➡️" if era_v<4.2 else "D ⚠️")
+                        row["Action"] = "▶️ Start" if has_game and era_v<4.2 else (
+                                         "⚠️ Risky" if has_game else "🪑 Sit (no game)")
+                    else:
+                        # Batter: show their 2026 stats vs facing pitcher hand
+                        r26 = _ef_match(p["name"], _bat26)
+                        row["Opp SP"] = pp_name
+                        row["SP Hand"] = pp_hand
+
+                        if r26 is not None:
+                            row["AVG"]   = round(float(r26.get("AVG",  .250) or .250), 3)
+                            row["wRC+"]  = round(float(r26.get("wRC+",  100) or 100),  0)
+                            row["xwOBA"] = round(float(r26.get("xwOBA",.320) or .320), 3)
+                            row["BABIP"] = round(float(r26.get("BABIP",.300) or .300), 3)
+                            wrc_v = float(row["wRC+"])
+                            row["Grade"]  = ("A 🔥" if wrc_v>=130 else "B ✅" if wrc_v>=105 else
+                                             "C ➡️" if wrc_v>=85  else "D ⚠️")
+                            row["Action"] = ("▶️ Start" if has_game and wrc_v>=90 else
+                                             "⚠️ Matchup check" if has_game else "🪑 No game")
+                        else:
+                            row["Grade"] = "—"; row["Action"] = "—"
+
+                    intel_rows.append(row)
+
+                idf = pd.DataFrame(intel_rows)
+                # sort: has game first, then by grade
+                idf["_sort"] = idf["Game Today"].map({"✅":0,"❌":1})
+                idf = idf.sort_values("_sort").drop(columns=["_sort"])
+
+                def _grade_c(val):
+                    v=str(val)
+                    if "A" in v: return "color:#21C354;font-weight:bold"
+                    if "B" in v: return "color:#21C354"
+                    if "C" in v: return "color:#FFA500"
+                    if "D" in v: return "color:#FF4B4B"
+                    return ""
+                def _action_c(val):
+                    v=str(val)
+                    if "Start" in v: return "color:#21C354;font-weight:bold"
+                    if "Risky" in v or "check" in v: return "color:#FFA500"
+                    if "Sit" in v: return "color:#888888"
+                    return ""
+
+                num_fmt_i = {}
+                for c in ["AVG","xwOBA","BABIP"]:
+                    if c in idf.columns: num_fmt_i[c] = "{:.3f}"
+                for c in ["ERA","FIP","WHIP"]:
+                    if c in idf.columns: num_fmt_i[c] = "{:.2f}"
+
+                style_i = idf.style
+                if "Grade"  in idf.columns: style_i = style_i.map(_grade_c,  subset=["Grade"])
+                if "Action" in idf.columns: style_i = style_i.map(_action_c, subset=["Action"])
+                if num_fmt_i: style_i = style_i.format(num_fmt_i, na_rep="—")
+
+                st.dataframe(style_i, use_container_width=True, hide_index=True)
+
+    # ── TAB 3: BATTER VS PITCHER H2H ────────────────────────────────
+    with ef_tab3:
+        st.markdown("#### ⚔️ Batter vs Pitcher — Career H2H")
+        st.caption(
+            "Enter a batter name and today's pitcher to pull their full career Statcast matchup history. "
+            "Shows AB count, AVG, xwOBA, exit velocity, launch angle."
+        )
+
+        h2h_c1, h2h_c2 = st.columns(2)
+        h2h_batter  = h2h_c1.text_input("Batter name", placeholder="e.g. Mookie Betts", key="h2h_bat")
+        h2h_pitcher = h2h_c2.text_input("Pitcher name", placeholder="e.g. Logan Webb",  key="h2h_pit")
+
+        if st.button("🔍 Pull H2H History", type="primary", key="btn_h2h"):
+            if h2h_batter and h2h_pitcher:
+                with st.spinner(f"Looking up player IDs..."):
+                    try:
+                        from pybaseball import playerid_lookup, statcast_batter
+                        # Parse names
+                        bparts = h2h_batter.strip().split()
+                        pparts = h2h_pitcher.strip().split()
+                        b_last, b_first = bparts[-1], bparts[0] if len(bparts)>1 else ""
+                        p_last, p_first = pparts[-1], pparts[0] if len(pparts)>1 else ""
+
+                        bid_df = playerid_lookup(b_last, b_first)
+                        pid_df = playerid_lookup(p_last, p_first)
+
+                        if bid_df.empty or pid_df.empty:
+                            st.error("Could not find one or both players. Check spelling.")
+                        else:
+                            b_mlbam = int(bid_df.iloc[0]["key_mlbam"])
+                            p_mlbam = int(pid_df.iloc[0]["key_mlbam"])
+                            b_name  = f"{bid_df.iloc[0]['name_first']} {bid_df.iloc[0]['name_last']}".title()
+                            p_name  = f"{pid_df.iloc[0]['name_first']} {pid_df.iloc[0]['name_last']}".title()
+
+                    except Exception as e:
+                        st.error(f"Player ID lookup failed: {e}")
+                        b_mlbam = p_mlbam = None
+
+                if b_mlbam and p_mlbam:
+                    with st.spinner(f"Pulling career Statcast data for {h2h_batter}..."):
+                        try:
+                            sc_data = statcast_batter("2015-04-01", _today_str, player_id=b_mlbam)
+                            # Filter to this pitcher
+                            if not sc_data.empty and "pitcher" in sc_data.columns:
+                                matchup = sc_data[sc_data["pitcher"]==p_mlbam].copy()
+                            else:
+                                matchup = pd.DataFrame()
+                        except Exception as e:
+                            st.error(f"Statcast pull failed: {e}")
+                            matchup = pd.DataFrame()
+
+                    if matchup.empty:
+                        st.info(f"No career H2H data found for {b_name} vs {p_name}. "
+                                "They may not have faced each other in the Statcast era (2015+).")
+                    else:
+                        # Compute summary stats
+                        pa_events = ["single","double","triple","home_run","field_out","strikeout",
+                                     "walk","hit_by_pitch","grounded_into_double_play","sac_fly",
+                                     "force_out","fielders_choice","fielders_choice_out"]
+                        ab_events = ["single","double","triple","home_run","field_out","strikeout",
+                                     "grounded_into_double_play","force_out","fielders_choice",
+                                     "fielders_choice_out"]
+
+                        pa_df = matchup[matchup["events"].isin(pa_events)] if "events" in matchup.columns else matchup
+                        ab_df = matchup[matchup["events"].isin(ab_events)]  if "events" in matchup.columns else matchup
+
+                        hits_ev = ["single","double","triple","home_run"]
+                        hits    = len(matchup[matchup["events"].isin(hits_ev)]) if "events" in matchup.columns else 0
+                        abs_n   = len(ab_df)
+                        pa_n    = len(pa_df)
+                        avg     = hits/abs_n if abs_n>0 else 0
+                        hrs     = len(matchup[matchup["events"]=="home_run"]) if "events" in matchup.columns else 0
+                        kk      = len(matchup[matchup["events"]=="strikeout"]) if "events" in matchup.columns else 0
+                        bb      = len(matchup[matchup["events"]=="walk"]) if "events" in matchup.columns else 0
+
+                        ev_mean  = float(matchup["launch_speed"].dropna().mean()) if "launch_speed" in matchup.columns else 0
+                        la_mean  = float(matchup["launch_angle"].dropna().mean()) if "launch_angle" in matchup.columns else 0
+                        xwoba_m  = float(matchup["estimated_woba_using_speedangle"].dropna().mean()) if "estimated_woba_using_speedangle" in matchup.columns else 0
+                        hard_hit = (matchup["launch_speed"]>=95).sum() / max(1,matchup["launch_speed"].notna().sum()) if "launch_speed" in matchup.columns else 0
+
+                        st.markdown(f"### {b_name} vs {p_name} — Career H2H")
+
+                        m1,m2,m3,m4,m5,m6 = st.columns(6)
+                        m1.metric("PA",    pa_n)
+                        m2.metric("AB",    abs_n)
+                        m3.metric("AVG",   f"{avg:.3f}")
+                        m4.metric("HR",    hrs)
+                        m5.metric("xwOBA", f"{xwoba_m:.3f}" if xwoba_m else "—")
+                        m6.metric("Hard Hit%", f"{hard_hit*100:.0f}%")
+
+                        n2,n3,n4 = st.columns(3)
+                        n2.metric("K",       kk)
+                        n3.metric("BB",      bb)
+                        n4.metric("Avg EV",  f"{ev_mean:.1f} mph" if ev_mean else "—")
+
+                        verdict = ""
+                        if pa_n >= 5:
+                            if avg >= .333 or xwoba_m >= .380:
+                                verdict = "🔥 **Owns this pitcher** — strong H2H history"
+                            elif avg <= .150 or xwoba_m <= .250:
+                                verdict = "❄️ **Struggles here** — consider benching"
+                            else:
+                                verdict = "⚖️ **Neutral matchup** — go by overall form"
+                        else:
+                            verdict = f"📊 **Small sample** ({pa_n} PA) — use with caution"
+
+                        st.markdown(verdict)
+
+                        # Show year-by-year breakdown
+                        if "game_date" in matchup.columns:
+                            matchup["year"] = pd.to_datetime(matchup["game_date"]).dt.year
+                            yby = []
+                            for yr, grp in matchup[matchup["events"].notna()].groupby("year"):
+                                yr_abs  = len(grp[grp["events"].isin(ab_events)])
+                                yr_hits = len(grp[grp["events"].isin(hits_ev)])
+                                yr_avg  = yr_hits/yr_abs if yr_abs>0 else 0
+                                yr_xw   = grp["estimated_woba_using_speedangle"].dropna().mean() if "estimated_woba_using_speedangle" in grp.columns else None
+                                yby.append({"Year":yr,"AB":yr_abs,"H":yr_hits,
+                                            "AVG":round(yr_avg,3),
+                                            "xwOBA":round(float(yr_xw),3) if yr_xw else None})
+                            if yby:
+                                st.markdown("**Year-by-year breakdown:**")
+                                yby_df = pd.DataFrame(yby).sort_values("Year", ascending=False)
+                                st.dataframe(yby_df.style.format({"AVG":"{:.3f}","xwOBA":"{:.3f}"}, na_rep="—"),
+                                             use_container_width=True, hide_index=True)
+            else:
+                st.info("Enter both a batter and pitcher name above.")
+
+    # ── TAB 4: REGRESSION WATCH ──────────────────────────────────────
+    with ef_tab4:
+        st.markdown("#### 📈 Regression Watch — Buy Low / Sell High")
+
+        rw_type = st.radio("", ["🔵 Unlucky Hitters (Buy)","🔴 Lucky Hitters (Sell)",
+                                 "🟢 ERA > FIP Pitchers (Buy)","🔴 ERA < FIP Pitchers (Sell)"],
+                            horizontal=True, key="rw_type")
+
+        rw_min = st.number_input("Min PA / IP", 15, 200, 20, key="rw_min")
+
+        if _bat26.empty and _pit26.empty:
+            st.info("Live 2026 data not available.")
+        else:
+            if "Hitter" in rw_type:
+                df_rw = _bat26.copy()
+                pa_c  = "PA" if "PA" in df_rw.columns else "AB"
+                df_rw = df_rw[pd.to_numeric(df_rw.get(pa_c,0), errors="coerce")>=rw_min]
+
+                for c in ["BABIP","AVG","OBP","SLG","wRC+","xwOBA","Barrel%"]:
+                    if c in df_rw.columns:
+                        df_rw[c] = pd.to_numeric(df_rw[c], errors="coerce")
+
+                if "BABIP" in df_rw.columns and "xwOBA" in df_rw.columns:
+                    df_rw["BABIP Gap"] = (df_rw["BABIP"] - .300).round(3)
+                    # xwOBA-AVG gap: high xwOBA with low AVG = unlucky
+                    if "AVG" in df_rw.columns:
+                        df_rw["Quality Gap"] = (df_rw["xwOBA"] - (df_rw["AVG"]+df_rw.get("OBP",.320)*.5)).round(3)
+
+                    if "Unlucky" in rw_type:
+                        # Low BABIP + high xwOBA = should be producing more
+                        df_rw["Buy Score"] = (-df_rw["BABIP Gap"]*2 + df_rw["xwOBA"]*3).round(3)
+                        df_rw = df_rw.sort_values("Buy Score", ascending=False)
+                        show_rw = [c for c in ["Name","Team","PA","AVG","BABIP","BABIP Gap",
+                                               "xwOBA","wRC+","Barrel%","Buy Score"] if c in df_rw.columns]
+                        st.markdown("**🔵 Unlucky hitters — BABIP below average + strong exit velocity. Due for positive regression.**")
+                        df_rw = df_rw[df_rw["BABIP Gap"] < -0.010]
+                    else:
+                        df_rw["Sell Score"] = (df_rw["BABIP Gap"]*2 - df_rw["xwOBA"]).round(3)
+                        df_rw = df_rw.sort_values("Sell Score", ascending=False)
+                        show_rw = [c for c in ["Name","Team","PA","AVG","BABIP","BABIP Gap",
+                                               "xwOBA","wRC+","Sell Score"] if c in df_rw.columns]
+                        st.markdown("**🔴 Overperforming hitters — BABIP well above average. Stats likely to decline.**")
+                        df_rw = df_rw[df_rw["BABIP Gap"] > 0.030]
+
+                    def _gap_color(val):
+                        try:
+                            v=float(val)
+                            if "Unlucky" in rw_type:
+                                if v<=-0.04: return "color:#21C354;font-weight:bold"
+                                if v<=-0.02: return "color:#21C354"
+                                return "color:#FFA500"
+                            else:
+                                if v>=0.05: return "color:#FF4B4B;font-weight:bold"
+                                if v>=0.03: return "color:#FF4B4B"
+                                return "color:#FFA500"
+                        except: return ""
+
+                    fmt_rw = {}
+                    for c in ["AVG","BABIP","xwOBA","BABIP Gap"]:
+                        if c in df_rw.columns: fmt_rw[c] = "{:.3f}"
+                    style_rw = df_rw[show_rw].head(30).style
+                    if "BABIP Gap" in show_rw: style_rw = style_rw.map(_gap_color, subset=["BABIP Gap"])
+                    if fmt_rw: style_rw = style_rw.format(fmt_rw, na_rep="—")
+                    st.dataframe(style_rw, use_container_width=True, hide_index=True)
+                    st.caption("Career average BABIP ≈ .300. Significant deviation often reverts to the mean within 4-6 weeks.")
+                else:
+                    st.info("BABIP or xwOBA not available in 2026 data yet.")
+
+            else:  # Pitcher
+                df_rw = _pit26.copy()
+                ip_c = "IP" if "IP" in df_rw.columns else "G"
+                df_rw = df_rw[pd.to_numeric(df_rw.get(ip_c,0), errors="coerce")>=rw_min]
+                for c in ["ERA","FIP","xFIP","K%","BB%"]:
+                    if c in df_rw.columns:
+                        df_rw[c] = pd.to_numeric(df_rw[c], errors="coerce")
+
+                if "ERA" in df_rw.columns and "FIP" in df_rw.columns:
+                    df_rw["ERA-FIP"] = (df_rw["ERA"]-df_rw["FIP"]).round(2)
+
+                    if "ERA > FIP" in rw_type:
+                        # ERA higher than FIP → ERA will come down (buy)
+                        df_rw = df_rw[df_rw["ERA-FIP"]>=0.30].sort_values("ERA-FIP", ascending=False)
+                        show_rw = [c for c in ["Name","Team","IP","ERA","FIP","xFIP","ERA-FIP","K%","BB%","WAR"] if c in df_rw.columns]
+                        st.markdown("**🟢 ERA >> FIP pitchers — ERA is inflated, should improve. Strong buy candidates.**")
+                    else:
+                        df_rw = df_rw[df_rw["ERA-FIP"]<=-0.30].sort_values("ERA-FIP")
+                        show_rw = [c for c in ["Name","Team","IP","ERA","FIP","xFIP","ERA-FIP","K%","BB%","WAR"] if c in df_rw.columns]
+                        st.markdown("**🔴 ERA << FIP pitchers — ERA is propped up by luck. Likely to get worse. Consider selling.**")
+
+                    def _erafip_c(val):
+                        try:
+                            v=float(val)
+                            if "ERA > FIP" in rw_type:
+                                if v>=1.0: return "color:#21C354;font-weight:bold"
+                                if v>=0.5: return "color:#21C354"
+                                return "color:#FFA500"
+                            else:
+                                if v<=-1.0: return "color:#FF4B4B;font-weight:bold"
+                                if v<=-0.5: return "color:#FF4B4B"
+                                return "color:#FFA500"
+                        except: return ""
+
+                    fmt_rw2 = {}
+                    for c in ["ERA","FIP","xFIP","ERA-FIP"]:
+                        if c in df_rw.columns: fmt_rw2[c] = "{:.2f}"
+                    for c in ["K%","BB%"]:
+                        if c in df_rw.columns: fmt_rw2[c] = "{:.1f}%"
+
+                    style_rw2 = df_rw[show_rw].head(30).style
+                    if "ERA-FIP" in show_rw: style_rw2 = style_rw2.map(_erafip_c, subset=["ERA-FIP"])
+                    if fmt_rw2: style_rw2 = style_rw2.format(fmt_rw2, na_rep="—")
+                    st.dataframe(style_rw2, use_container_width=True, hide_index=True)
+                    st.caption("FIP (Fielding Independent Pitching) strips out defense luck. ERA persistently > FIP by 0.5+ indicates positive regression ahead.")
+
+    # ── TAB 5: WAIVER WIRE RANKER ────────────────────────────────────
+    with ef_tab5:
+        st.markdown("#### 🚨 Waiver Wire Ranker")
+        st.caption(
+            "Comprehensive ranking of ALL available free agents by composite true-value score. "
+            "Combines 2026 live stats + Statcast quality + recent form + schedule."
+        )
+
+        if not _yahoo_ok:
+            st.warning("🔗 Connect to **My Yahoo League** first.")
+        else:
+            ww_c1, ww_c2 = st.columns(2)
+            ww_pos  = ww_c1.selectbox("Position", ["Hitters","Pitchers"], key="ww_pos")
+            ww_n    = ww_c2.number_input("FAs to rank", 20, 150, 75, key="ww_n")
+
+            if st.button("🚨 Rank Waiver Wire", type="primary", key="btn_ww"):
+                st.session_state.pop("ef_ww_results", None)
+
+            if "ef_ww_results" not in st.session_state:
+                with st.spinner("Fetching free agents + analyzing..."):
+                    def _ef_api2(path):
+                        import requests as _rr2
+                        tok2 = st.session_state.get("yahoo_token",{})
+                        r2 = _rr2.get(
+                            f"https://fantasysports.yahooapis.com/fantasy/v2{path}?format=json",
+                            headers={"Authorization": f"Bearer {tok2.get('access_token','')}",
+                                     "Accept":"application/json"},
+                            timeout=15)
+                        return r2.json() if r2.status_code==200 else {}
+
+                    lk2  = st.session_state["yahoo_league_key"]
+                    ypos2 = "B" if ww_pos=="Hitters" else "P"
+                    fa_resp2 = _ef_api2(f"/league/{lk2}/players;status=FA;position={ypos2};sort=AR;count={ww_n}")
+
+                    fa2 = []
+                    try:
+                        pl2 = fa_resp2["fantasy_content"]["league"][1]["players"]
+                        for k,v in pl2.items():
+                            if k=="count": continue
+                            p0   = v["player"][0]
+                            name = next((x["name"]["full"] for x in p0 if isinstance(x,dict) and "name" in x),"")
+                            pos  = next((x["display_position"] for x in p0 if isinstance(x,dict) and "display_position" in x),"")
+                            team = next((x["editorial_team_abbr"] for x in p0 if isinstance(x,dict) and "editorial_team_abbr" in x),"")
+                            pct  = next((float(x.get("percent_owned",{}).get("value",0)) for x in p0 if isinstance(x,dict) and "percent_owned" in x), 0.0)
+                            fa2.append({"name":name,"pos":pos,"team":team,"pct":pct})
+                    except: pass
+
+                    # L7 for trend
+                    l7_src = _ef_bat_range(_7d_ago, _today_str) if ww_pos=="Hitters" else _ef_pit_range(_7d_ago, _today_str)
+                    l14_src = _ef_bat_range(_14d_ago, _today_str) if ww_pos=="Hitters" else _ef_pit_range(_14d_ago, _today_str)
+
+                    # This week schedule
+                    week_start_ww = _today_ef - _dt_ef.timedelta(days=_today_ef.weekday())
+                    team_games_ww = {}
+                    try:
+                        for d in range(7):
+                            day_ww = (week_start_ww + _dt_ef.timedelta(days=d)).strftime("%Y-%m-%d")
+                            rr_ww = _ref.get("https://statsapi.mlb.com/api/v1/schedule",
+                                             params={"sportId":1,"date":day_ww,
+                                                     "fields":"dates,games,teams,abbreviation"},
+                                             timeout=8)
+                            if rr_ww.status_code==200:
+                                for gm in rr_ww.json().get("dates",[{}])[0].get("games",[]):
+                                    for s in ["away","home"]:
+                                        ab = gm.get("teams",{}).get(s,{}).get("team",{}).get("abbreviation","")
+                                        if ab: team_games_ww[ab]=team_games_ww.get(ab,0)+1
+                    except: pass
+
+                    WRCPLUS_WW = {"LAD":112,"NYY":108,"ATL":107,"HOU":106,"PHI":103,"BOS":102,
+                                  "BAL":101,"SEA":100,"CIN":99,"MIN":99,"SF":98,"MIL":97,
+                                  "STL":96,"TOR":96,"CLE":95,"TB":94,"TEX":93,"NYM":93,
+                                  "ARI":92,"KC":91,"DET":90,"SD":90,"OAK":89,"WSH":88,
+                                  "PIT":87,"MIA":86,"COL":85,"LAA":84,"CWS":83,"CHC":97}
+
+                    ww_rows = []
+                    for p in fa2:
+                        r = {"Name":p["name"],"Pos":p["pos"],"Team":p["team"],"%Own":round(p["pct"],1)}
+                        games_wk_ww = team_games_ww.get(p["team"],0)
+                        r["G/Wk"] = games_wk_ww
+
+                        if ww_pos == "Hitters":
+                            row26 = _ef_match(p["name"], _bat26)
+                            if row26 is None: continue
+                            pa    = float(row26.get("PA", 0) or 0)
+                            wrc   = float(row26.get("wRC+",100) or 100)
+                            xwoba = float(row26.get("xwOBA",.320) or .320)
+                            babip = float(row26.get("BABIP",.300) or .300)
+                            barr  = float(row26.get("Barrel%",8) or 8)
+                            hr    = int(float(row26.get("HR",0) or 0))
+                            sb    = int(float(row26.get("SB",0) or 0))
+                            avg   = float(row26.get("AVG",.250) or .250)
+
+                            # L7 trend
+                            l7_wrc = wrc
+                            rm7 = _ef_match(p["name"], l7_src)
+                            if rm7 is not None and "wRC+" in rm7.index:
+                                l7_wrc = float(rm7.get("wRC+", wrc) or wrc)
+
+                            # Composite: quality (xwOBA/Barrel%) + production (wRC+) + schedule + trend
+                            q_score  = max(0,min(1,(xwoba-.250)/.150))  # xwOBA quality
+                            p_score  = max(0,min(1,(wrc-50)/130))       # wRC+ production
+                            g_score  = min(1, games_wk_ww/7)            # games this week
+                            t_score  = max(0,min(1,(l7_wrc-50)/130))    # recent form
+                            babip_bonus = max(0,(.300-babip)/.060)*.15  # unlucky = bonus
+
+                            composite = (q_score*.35 + p_score*.30 + g_score*.15 +
+                                         t_score*.15 + babip_bonus)
+
+                            r.update({"PA":int(pa),"HR":hr,"SB":sb,
+                                      "AVG":round(avg,3),"wRC+":round(wrc,0),
+                                      "xwOBA":round(xwoba,3),"Barrel%":round(barr,1),
+                                      "BABIP":round(babip,3),"L7 wRC+":round(l7_wrc,0),
+                                      "Score":round(composite,3)})
+                        else:
+                            row26 = _ef_match(p["name"], _pit26)
+                            if row26 is None: continue
+                            ip   = float(row26.get("IP",0) or 0)
+                            era  = float(row26.get("ERA",4.5) or 4.5)
+                            fip  = float(row26.get("FIP",4.0) or 4.0)
+                            xfip = float(row26.get("xFIP",4.0) or 4.0)
+                            kpct = float(row26.get("K%",20) or 20)
+                            gs   = int(float(row26.get("GS",0) or 0))
+                            war  = float(row26.get("WAR",0) or 0)
+
+                            l7_era = era
+                            rm7p = _ef_match(p["name"], l7_src)
+                            if rm7p is not None and "ERA" in rm7p.index:
+                                l7_era = float(rm7p.get("ERA", era) or era)
+
+                            q_score = max(0,min(1,(6.0-fip)/4.0))
+                            k_score = min(1,(kpct-10)/25)
+                            g_score = min(1, gs/2) if "SP" in p["pos"] else min(1,games_wk_ww/7)
+                            t_score = max(0,min(1,(6.0-l7_era)/4.0))
+                            luck_b  = max(0,(era-fip)/2.0)*.15  # ERA > FIP bonus
+
+                            composite = (q_score*.35 + k_score*.25 + g_score*.20 +
+                                         t_score*.15 + luck_b)
+
+                            r.update({"IP":round(ip,1),"GS":gs,
+                                      "ERA":round(era,2),"FIP":round(fip,2),
+                                      "xFIP":round(xfip,2),"K%":round(kpct,1),
+                                      "L7 ERA":round(l7_era,2),"WAR":round(war,2),
+                                      "Score":round(composite,3)})
+
+                        r["Rank"] = 0  # filled below
+                        ww_rows.append(r)
+
+                    ww_rows.sort(key=lambda x: -x.get("Score",0))
+                    for i,r in enumerate(ww_rows): r["Rank"] = i+1
+                    st.session_state["ef_ww_results"] = ww_rows
+
+            if "ef_ww_results" in st.session_state:
+                wdf = pd.DataFrame(st.session_state["ef_ww_results"])
+                if wdf.empty:
+                    st.info("No results — try adjusting filters.")
+                else:
+                    # Move Rank first
+                    cols_ww = ["Rank"] + [c for c in wdf.columns if c!="Rank"]
+                    wdf = wdf[cols_ww]
+
+                    def _score_c(val):
+                        try:
+                            v=float(val)
+                            if v>=.70: return "color:#21C354;font-weight:bold"
+                            if v>=.55: return "color:#21C354"
+                            if v>=.40: return "color:#FFA500"
+                            return "color:#FF4B4B"
+                        except: return ""
+
+                    fmt_ww = {}
+                    for c in ["AVG","xwOBA","BABIP"]:
+                        if c in wdf.columns: fmt_ww[c] = "{:.3f}"
+                    for c in ["ERA","FIP","xFIP","L7 ERA"]:
+                        if c in wdf.columns: fmt_ww[c] = "{:.2f}"
+                    fmt_ww["Score"] = "{:.3f}"
+
+                    style_ww = wdf.style.map(_score_c, subset=["Score"])
+                    if "Score" in wdf.columns:
+                        style_ww = style_ww.background_gradient(subset=["Score"], cmap="RdYlGn", vmin=.25, vmax=.80)
+                    if fmt_ww:
+                        style_ww = style_ww.format(fmt_ww, na_rep="—")
+
+                    st.dataframe(style_ww, use_container_width=True, hide_index=True, height=550)
+                    st.caption(
+                        "**Score:** xwOBA/FIP quality (35%) · wRC+/K% production (30%) · "
+                        "Games/starts this week (15-20%) · Recent L7 form (15%) · BABIP/ERA-FIP luck bonus."
+                    )
+
+
+# ═══════════════════════════════════════════════════════
+# PAGE: 🔬 Player Lab  — deep pybaseball analytics
+# ═══════════════════════════════════════════════════════
+if page == "🔬 Player Lab":
+    st.title("🔬 Player Lab")
+    st.caption(
+        "Deep Statcast analytics powered by pybaseball — "
+        "percentile ranks, pitch arsenal, exit velocity leaderboards, "
+        "team standings & schedules, and sprint speed."
+    )
+
+    import datetime as _dtpl
+
+    # ── Shared cached loaders ────────────────────────────────────────
+
+    @st.cache_data(ttl=14400, show_spinner=False)
+    def _pl_bat_pct(yr=2026):
+        try:
+            from pybaseball import statcast_batter_percentile_ranks
+            return statcast_batter_percentile_ranks(yr)
+        except Exception as e:
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=14400, show_spinner=False)
+    def _pl_pit_pct(yr=2026):
+        try:
+            from pybaseball import statcast_pitcher_percentile_ranks
+            return statcast_pitcher_percentile_ranks(yr)
+        except Exception as e:
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=14400, show_spinner=False)
+    def _pl_ev_bat(yr=2026, minBBE=10):
+        try:
+            from pybaseball import statcast_batter_exitvelo_barrels
+            return statcast_batter_exitvelo_barrels(yr, minBBE=minBBE)
+        except Exception as e:
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=14400, show_spinner=False)
+    def _pl_ev_pit(yr=2026, minBBE=10):
+        try:
+            from pybaseball import statcast_pitcher_exitvelo_barrels
+            return statcast_pitcher_exitvelo_barrels(yr, minBBE=minBBE)
+        except Exception as e:
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=86400, show_spinner=False)
+    def _pl_pitcher_statcast(pid, start_dt, end_dt):
+        try:
+            from pybaseball import statcast_pitcher
+            return statcast_pitcher(start_dt, end_dt, player_id=pid)
+        except Exception as e:
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=86400, show_spinner=False)
+    def _pl_batter_statcast(pid, start_dt, end_dt):
+        try:
+            from pybaseball import statcast_batter
+            return statcast_batter(start_dt, end_dt, player_id=pid)
+        except Exception as e:
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=86400, show_spinner=False)
+    def _pl_lookup(last, first=""):
+        try:
+            from pybaseball import playerid_lookup
+            return playerid_lookup(last, first)
+        except Exception as e:
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def _pl_standings(yr=2026):
+        try:
+            from pybaseball import standings
+            return standings(yr)
+        except Exception as e:
+            return []
+
+    @st.cache_data(ttl=14400, show_spinner=False)
+    def _pl_team_bat(yr=2026):
+        try:
+            from pybaseball import team_batting
+            return team_batting(yr)
+        except Exception as e:
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=14400, show_spinner=False)
+    def _pl_team_pit(yr=2026):
+        try:
+            from pybaseball import team_pitching
+            return team_pitching(yr)
+        except Exception as e:
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=86400, show_spinner=False)
+    def _pl_schedule(season, team_abbr):
+        try:
+            from pybaseball import schedule_and_record
+            return schedule_and_record(season, team_abbr)
+        except Exception as e:
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=14400, show_spinner=False)
+    def _pl_sprint(yr=2026):
+        try:
+            from pybaseball import statcast_running_sprint_speed
+            return statcast_running_sprint_speed(yr)
+        except Exception as e:
+            return pd.DataFrame()
+
+    _today_pl  = _dtpl.date.today()
+    _szn_start = "2026-03-27"
+    _today_str_pl = _today_pl.strftime("%Y-%m-%d")
+    _30d_ago = (_today_pl - _dtpl.timedelta(days=30)).strftime("%Y-%m-%d")
+    _14d_ago_pl = (_today_pl - _dtpl.timedelta(days=14)).strftime("%Y-%m-%d")
+
+    pl_tab1, pl_tab2, pl_tab3, pl_tab4, pl_tab5 = st.tabs([
+        "🎡 Percentile Ranks",
+        "💥 Exit Velo & Barrels",
+        "🎯 Pitch Arsenal",
+        "📅 Standings & Schedule",
+        "🏃 Sprint Speed",
+    ])
+
+    # ── TAB 1: PERCENTILE RANKS ──────────────────────────────────────
+    with pl_tab1:
+        st.markdown("#### 🎡 Baseball Savant Percentile Ranks — 2026")
+        st.caption("Percentile ranks from Baseball Savant via pybaseball. "
+                   "Higher = better for all metrics except ERA/WHIP/BB%.")
+
+        pct_type = st.radio("Player type", ["Batter","Pitcher"], horizontal=True, key="pct_type")
+        pct_name = st.text_input(
+            "Player name (leave blank for full leaderboard)",
+            placeholder="e.g. Shohei Ohtani",
+            key="pct_name"
+        )
+
+        with st.spinner("Loading percentile data..."):
+            pct_df = _pl_bat_pct() if pct_type == "Batter" else _pl_pit_pct()
+
+        if pct_df.empty:
+            st.info("Percentile data not available yet for 2026. Check back once more games are played.")
+        else:
+            st.caption(f"Loaded {len(pct_df)} players · columns: {list(pct_df.columns[:10])}")
+
+            # Try to find player-specific row
+            if pct_name.strip():
+                last_p = pct_name.strip().split()[-1].lower()
+                # percentile df uses last_name / first_name columns
+                name_col = next((c for c in pct_df.columns if "last" in c.lower()), None)
+                if name_col:
+                    match_p = pct_df[pct_df[name_col].str.lower() == last_p]
+                else:
+                    # fallback: look for player_name style column
+                    match_p = pd.DataFrame()
+                    for c in pct_df.columns:
+                        if pct_df[c].dtype == object:
+                            hits = pct_df[pct_df[c].str.lower().str.contains(last_p, na=False)]
+                            if not hits.empty:
+                                match_p = hits
+                                break
+
+                if not match_p.empty:
+                    player_row = match_p.iloc[0]
+                    st.markdown(f"### {pct_name}")
+
+                    # Identify numeric percentile columns
+                    num_cols_p = [c for c in pct_df.columns
+                                  if pct_df[c].dtype in [float, int]
+                                  and pct_df[c].between(0,100).all()]
+
+                    if num_cols_p:
+                        # Draw percentile bars using plotly
+                        pct_vals = [(c, float(player_row[c])) for c in num_cols_p if pd.notna(player_row[c])]
+                        pct_vals.sort(key=lambda x: -x[1])
+
+                        colors = ["#21C354" if v>=67 else "#FFA500" if v>=33 else "#FF4B4B"
+                                  for _, v in pct_vals]
+
+                        fig_pct = go.Figure(go.Bar(
+                            x=[v for _, v in pct_vals],
+                            y=[c.replace("_"," ").title() for c, _ in pct_vals],
+                            orientation="h",
+                            marker_color=colors,
+                            text=[f"{v:.0f}th" for _, v in pct_vals],
+                            textposition="outside"
+                        ))
+                        fig_pct.update_layout(
+                            template="plotly_dark", height=max(300, len(pct_vals)*28),
+                            xaxis=dict(range=[0,105], title="Percentile"),
+                            margin=dict(l=160, r=60, t=20, b=30)
+                        )
+                        st.plotly_chart(fig_pct, use_container_width=True)
+                    else:
+                        st.dataframe(match_p, use_container_width=True, hide_index=True)
+                else:
+                    st.warning(f"Player '{pct_name}' not found. Check spelling or try last name only.")
+
+            else:
+                # Full leaderboard — identify key columns
+                num_pct_cols = [c for c in pct_df.columns
+                                if pct_df[c].dtype in [float, int]
+                                and pct_df[c].between(0,100).all()]
+                id_cols = [c for c in pct_df.columns if c not in num_pct_cols][:3]
+                show_cols = id_cols + num_pct_cols[:8]
+
+                if num_pct_cols:
+                    pct_sort = st.selectbox("Sort by", num_pct_cols[:12], key="pct_sort")
+                    pct_df_show = pct_df[show_cols].copy()
+                    pct_df_show = pct_df_show.sort_values(pct_sort, ascending=False)
+
+                    styled_pct = pct_df_show.head(50).style.background_gradient(
+                        subset=num_pct_cols[:8], cmap="RdYlGn", vmin=0, vmax=100
+                    )
+                    st.dataframe(styled_pct, use_container_width=True, hide_index=True, height=520)
+                else:
+                    st.dataframe(pct_df.head(50), use_container_width=True, hide_index=True)
+
+    # ── TAB 2: EXIT VELO & BARRELS ──────────────────────────────────
+    with pl_tab2:
+        st.markdown("#### 💥 Exit Velocity & Barrel Leaderboard — 2026")
+        st.caption("From Baseball Savant via `statcast_batter_exitvelo_barrels` and "
+                   "`statcast_pitcher_exitvelo_barrels`. Batted ball quality leaders.")
+
+        ev_c1, ev_c2, ev_c3 = st.columns(3)
+        ev_type   = ev_c1.radio("Type", ["Batters (offense)","Pitchers (against)"], horizontal=False, key="ev_type")
+        ev_min    = ev_c2.number_input("Min batted ball events", 5, 200, 15, key="ev_min")
+        ev_sort   = ev_c3.selectbox("Sort by",
+            ["avg_hit_speed","max_hit_speed","brl_percent","brl_pa","avg_distance","avg_launch_angle","ev95percent"]
+            , key="ev_sort")
+
+        with st.spinner("Loading exit velo data..."):
+            if ev_type.startswith("Batters"):
+                ev_df = _pl_ev_bat(2026, minBBE=ev_min)
+            else:
+                ev_df = _pl_ev_pit(2026, minBBE=ev_min)
+
+        if ev_df.empty:
+            st.info("Exit velocity data not available yet for 2026.")
+        else:
+            # Normalize column names (Savant uses various formats)
+            ev_df.columns = [c.lower().replace(" ","_") for c in ev_df.columns]
+
+            # Find available sort col
+            actual_sort = next((c for c in [ev_sort, "avg_hit_speed","brl_percent","brl_pa"]
+                                if c in ev_df.columns), ev_df.columns[-1])
+
+            for c in ev_df.select_dtypes(include="object").columns:
+                try:
+                    ev_df[c] = pd.to_numeric(ev_df[c], errors="ignore")
+                except: pass
+
+            ev_df = ev_df.sort_values(actual_sort, ascending=ev_type.startswith("Pitchers"))
+
+            # Identify key display columns
+            id_ev  = [c for c in ["last_name","first_name","player_name","team","year"]
+                      if c in ev_df.columns]
+            stat_ev = [c for c in ["avg_hit_speed","max_hit_speed","brl_percent","brl_pa",
+                                   "avg_distance","avg_launch_angle","ev95percent",
+                                   "hard_hit_percent","avg_hit_angle","avg_spin"]
+                       if c in ev_df.columns]
+            show_ev = id_ev + stat_ev
+
+            def _ev_color(val):
+                try:
+                    v=float(val)
+                    # avg exit velo: 90=avg, 95=great
+                    if v>=95: return "color:#21C354;font-weight:bold"
+                    if v>=91: return "color:#21C354"
+                    if v>=87: return "color:#FFA500"
+                    return "color:#FF4B4B"
+                except: return ""
+
+            def _brl_color(val):
+                try:
+                    v=float(val)
+                    if v>=12: return "color:#21C354;font-weight:bold"
+                    if v>=8:  return "color:#21C354"
+                    if v>=4:  return "color:#FFA500"
+                    return "color:#FF4B4B"
+                except: return ""
+
+            style_ev = ev_df[show_ev].head(50).style
+            if "avg_hit_speed" in show_ev:
+                style_ev = style_ev.map(_ev_color, subset=["avg_hit_speed"])
+            if "brl_percent" in show_ev:
+                style_ev = style_ev.map(_brl_color, subset=["brl_percent"])
+
+            fmt_ev = {}
+            for c in ["avg_hit_speed","max_hit_speed","ev95percent"]:
+                if c in show_ev: fmt_ev[c] = "{:.1f}"
+            for c in ["brl_percent","hard_hit_percent","avg_launch_angle"]:
+                if c in show_ev: fmt_ev[c] = "{:.1f}%"
+            if fmt_ev: style_ev = style_ev.format(fmt_ev, na_rep="—")
+
+            st.dataframe(style_ev, use_container_width=True, hide_index=True, height=540)
+
+            # My roster overlay
+            roster_ev = st.session_state.get("yahoo_roster_data", {})
+            if "error" not in roster_ev and roster_ev:
+                st.markdown("---")
+                st.markdown("**Your roster players in this dataset:**")
+                try:
+                    ents_ev = roster_ev["fantasy_content"]["team"][1]["roster"]["0"]["players"]
+                    my_names_ev = []
+                    for k,v in ents_ev.items():
+                        if k=="count": continue
+                        p0 = v["player"][0]
+                        n  = next((x["name"]["full"] for x in p0 if isinstance(x,dict) and "name" in x),"")
+                        if n: my_names_ev.append(n)
+
+                    # Find in ev_df by last name
+                    found_ev = []
+                    for nm in my_names_ev:
+                        last_ev = nm.split()[-1].lower()
+                        for nc in ["last_name","player_name"]:
+                            if nc in ev_df.columns:
+                                hit = ev_df[ev_df[nc].str.lower().str.contains(last_ev, na=False)]
+                                if not hit.empty:
+                                    row = hit.iloc[0].to_dict()
+                                    row["_name"] = nm
+                                    found_ev.append(row)
+                                    break
+
+                    if found_ev:
+                        my_ev_df = pd.DataFrame(found_ev)
+                        show_my = ["_name"] + [c for c in stat_ev if c in my_ev_df.columns]
+                        st.dataframe(my_ev_df[show_my].rename(columns={"_name":"Player"}),
+                                     use_container_width=True, hide_index=True)
+                    else:
+                        st.caption("No roster players matched in this dataset yet.")
+                except: pass
+
+    # ── TAB 3: PITCH ARSENAL ────────────────────────────────────────
+    with pl_tab3:
+        st.markdown("#### 🎯 Pitch Arsenal Deep Dive")
+        st.caption(
+            "Pull any pitcher's full 2026 pitch mix from Baseball Savant via pybaseball. "
+            "Shows velocity, spin rate, movement, usage%, and outcomes per pitch type."
+        )
+
+        pa_c1, pa_c2 = st.columns(2)
+        pa_name   = pa_c1.text_input("Pitcher name", placeholder="e.g. Logan Webb", key="pa_name")
+        pa_days   = pa_c2.selectbox("Time window", ["Full 2026 season","Last 30 days","Last 14 days"], key="pa_days")
+
+        if st.button("🔍 Analyze Arsenal", type="primary", key="btn_pa"):
+            if pa_name.strip():
+                with st.spinner(f"Looking up {pa_name}..."):
+                    parts = pa_name.strip().split()
+                    p_last, p_first = parts[-1], parts[0] if len(parts)>1 else ""
+                    pid_df = _pl_lookup(p_last, p_first)
+
+                if pid_df.empty:
+                    st.error(f"Player '{pa_name}' not found.")
+                else:
+                    pid    = int(pid_df.iloc[0]["key_mlbam"])
+                    p_disp = f"{pid_df.iloc[0]['name_first']} {pid_df.iloc[0]['name_last']}".title()
+
+                    if pa_days == "Last 14 days":
+                        s_dt = _14d_ago_pl
+                    elif pa_days == "Last 30 days":
+                        s_dt = _30d_ago
+                    else:
+                        s_dt = _szn_start
+
+                    with st.spinner(f"Pulling Statcast data for {p_disp}..."):
+                        sc_pit = _pl_pitcher_statcast(pid, s_dt, _today_str_pl)
+
+                    if sc_pit is None or sc_pit.empty:
+                        st.info(f"No Statcast data found for {p_disp} in this window.")
+                    else:
+                        st.markdown(f"### {p_disp} — Pitch Arsenal")
+                        st.caption(f"{len(sc_pit):,} pitches · {pa_days}")
+
+                        if "pitch_type" not in sc_pit.columns:
+                            st.warning("pitch_type column not found in Statcast data.")
+                        else:
+                            sc_pit = sc_pit[sc_pit["pitch_type"].notna() &
+                                           (sc_pit["pitch_type"] != "")]
+
+                            pitch_map = {
+                                "FF":"4-Seam FB","SI":"Sinker","FC":"Cutter",
+                                "SL":"Slider","CU":"Curveball","KC":"Knuckle-Curve",
+                                "CH":"Changeup","FS":"Splitter","FO":"Forkball",
+                                "ST":"Sweeper","SV":"Sweeping Curve","KN":"Knuckleball",
+                                "SC":"Screwball","EP":"Eephus","CS":"Slow Curve",
+                            }
+
+                            rows_pa = []
+                            total_p = len(sc_pit)
+
+                            for pt, grp in sc_pit.groupby("pitch_type"):
+                                pct_use = len(grp)/total_p*100
+                                velo    = grp["release_speed"].dropna().mean()
+                                spin    = grp["release_spin_rate"].dropna().mean()
+                                pfx_x   = grp["pfx_x"].dropna().mean()*12  # convert ft to inches
+                                pfx_z   = grp["pfx_z"].dropna().mean()*12
+                                ev_ag   = grp["launch_speed"].dropna().mean()
+                                la_ag   = grp["launch_angle"].dropna().mean()
+                                xwoba_ag = grp["estimated_woba_using_speedangle"].dropna().mean() if "estimated_woba_using_speedangle" in grp.columns else None
+
+                                # Whiff rate
+                                swings = grp[grp["description"].isin(
+                                    ["swinging_strike","swinging_strike_blocked",
+                                     "foul","foul_tip","hit_into_play","hit_into_play_no_out",
+                                     "hit_into_play_score"]
+                                )] if "description" in grp.columns else grp
+                                whiffs = grp[grp["description"].isin(
+                                    ["swinging_strike","swinging_strike_blocked"]
+                                )] if "description" in grp.columns else pd.DataFrame()
+                                whiff_rate = len(whiffs)/max(1,len(swings))*100
+
+                                rows_pa.append({
+                                    "Pitch":     pitch_map.get(pt, pt),
+                                    "Code":      pt,
+                                    "Count":     len(grp),
+                                    "Usage%":    round(pct_use,1),
+                                    "Velo":      round(velo,1) if pd.notna(velo) else None,
+                                    "Spin":      round(spin,0) if pd.notna(spin) else None,
+                                    "H-Break\"": round(pfx_x,1) if pd.notna(pfx_x) else None,
+                                    "V-Break\"": round(pfx_z,1) if pd.notna(pfx_z) else None,
+                                    "Whiff%":    round(whiff_rate,1),
+                                    "Opp EV":   round(ev_ag,1) if pd.notna(ev_ag) else None,
+                                    "Opp LA":   round(la_ag,1) if pd.notna(la_ag) else None,
+                                    "xwOBA ag": round(float(xwoba_ag),3) if xwoba_ag and pd.notna(xwoba_ag) else None,
+                                })
+
+                            rows_pa.sort(key=lambda x: -x["Usage%"])
+                            pa_df = pd.DataFrame(rows_pa)
+
+                            def _whiff_c(val):
+                                try:
+                                    v=float(val)
+                                    if v>=35: return "color:#21C354;font-weight:bold"
+                                    if v>=25: return "color:#21C354"
+                                    if v>=15: return "color:#FFA500"
+                                    return "color:#FF4B4B"
+                                except: return ""
+                            def _xwoba_c(val):
+                                try:
+                                    v=float(val)
+                                    if v<=.280: return "color:#21C354;font-weight:bold"
+                                    if v<=.320: return "color:#21C354"
+                                    if v<=.360: return "color:#FFA500"
+                                    return "color:#FF4B4B"
+                                except: return ""
+
+                            fmt_pa = {}
+                            if "Whiff%"   in pa_df.columns: fmt_pa["Whiff%"]    = "{:.1f}%"
+                            if "Usage%"   in pa_df.columns: fmt_pa["Usage%"]    = "{:.1f}%"
+                            if "xwOBA ag" in pa_df.columns: fmt_pa["xwOBA ag"]  = "{:.3f}"
+
+                            style_pa = pa_df.style
+                            if "Whiff%"   in pa_df.columns: style_pa = style_pa.map(_whiff_c,  subset=["Whiff%"])
+                            if "xwOBA ag" in pa_df.columns: style_pa = style_pa.map(_xwoba_c,  subset=["xwOBA ag"])
+                            if fmt_pa: style_pa = style_pa.format(fmt_pa, na_rep="—")
+
+                            st.dataframe(style_pa, use_container_width=True, hide_index=True)
+
+                            # Velocity trend chart
+                            if "game_date" in sc_pit.columns and "release_speed" in sc_pit.columns:
+                                st.markdown("**Velocity trend by date:**")
+                                sc_pit["game_date"] = pd.to_datetime(sc_pit["game_date"])
+                                velo_trend = (
+                                    sc_pit[sc_pit["pitch_type"].isin(pa_df["Code"].tolist())]
+                                    .groupby(["game_date","pitch_type"])["release_speed"]
+                                    .mean().reset_index()
+                                )
+                                if not velo_trend.empty:
+                                    fig_vt = go.Figure()
+                                    for pt2 in velo_trend["pitch_type"].unique():
+                                        grp2 = velo_trend[velo_trend["pitch_type"]==pt2]
+                                        fig_vt.add_trace(go.Scatter(
+                                            x=grp2["game_date"], y=grp2["release_speed"],
+                                            mode="lines+markers",
+                                            name=pitch_map.get(pt2, pt2),
+                                            line=dict(width=2)
+                                        ))
+                                    fig_vt.update_layout(
+                                        template="plotly_dark", height=280,
+                                        xaxis_title="Date", yaxis_title="Velocity (mph)",
+                                        margin=dict(t=10,b=40)
+                                    )
+                                    st.plotly_chart(fig_vt, use_container_width=True)
+            else:
+                st.info("Enter a pitcher name above.")
+
+    # ── TAB 4: STANDINGS & SCHEDULE ──────────────────────────────────
+    with pl_tab4:
+        st.markdown("#### 📅 2026 Standings & Team Schedule Analysis")
+        st.caption("Division standings + team batting/pitching stats + upcoming schedule difficulty.")
+
+        sd_c1, sd_c2 = st.columns(2)
+        with sd_c1:
+            st.markdown("##### 📊 Division Standings")
+            with st.spinner("Loading standings..."):
+                divs = _pl_standings(2026)
+            if not divs:
+                st.info("Standings not available yet.")
+            else:
+                for div in divs:
+                    if isinstance(div, pd.DataFrame):
+                        div_name = div.columns[0] if div.columns[0] != "Tm" else "Division"
+                        st.markdown(f"**{div_name}**")
+                        st.dataframe(div, use_container_width=True, hide_index=True)
+                    else:
+                        st.write(div)
+
+        with sd_c2:
+            st.markdown("##### 🏟️ Team Batting vs Pitching Quality")
+            with st.spinner("Loading team stats..."):
+                tb = _pl_team_bat(2026)
+                tp = _pl_team_pit(2026)
+
+            if not tb.empty:
+                tb_cols = [c for c in ["Team","G","PA","HR","R","RBI","SB","AVG","OBP","SLG","OPS","wRC+"] if c in tb.columns]
+                if tb_cols:
+                    for c in tb_cols[2:]:
+                        tb[c] = pd.to_numeric(tb[c], errors="coerce")
+                    tb_sort = "wRC+" if "wRC+" in tb_cols else tb_cols[-1]
+                    st.dataframe(
+                        tb[tb_cols].sort_values(tb_sort, ascending=False)
+                        .style.background_gradient(subset=[tb_sort], cmap="RdYlGn"),
+                        use_container_width=True, hide_index=True
+                    )
+
+        if not tp.empty:
+            st.markdown("##### 🎳 Team Pitching")
+            tp_cols = [c for c in ["Team","G","ERA","WHIP","FIP","K%","BB%","SO","HR","WAR"] if c in tp.columns]
+            if tp_cols:
+                for c in tp_cols[2:]:
+                    tp[c] = pd.to_numeric(tp[c], errors="coerce")
+                tp_sort = "ERA" if "ERA" in tp_cols else tp_cols[-1]
+                st.dataframe(
+                    tp[tp_cols].sort_values(tp_sort, ascending=True)
+                    .style.background_gradient(subset=[tp_sort], cmap="RdYlGn_r"),
+                    use_container_width=True, hide_index=True
+                )
+
+        # Schedule lookup
+        st.markdown("---")
+        st.markdown("##### 🗓️ Team Schedule Lookup")
+        sched_teams = ["LAD","NYY","ATL","HOU","PHI","BOS","BAL","SEA","CIN","MIN",
+                       "SF","MIL","STL","TOR","CLE","TB","TEX","NYM","ARI","KC",
+                       "DET","SD","OAK","WSH","PIT","MIA","COL","LAA","CWS","CHC"]
+        sch_c1, sch_c2 = st.columns(2)
+        sch_team = sch_c1.selectbox("Team", sched_teams, key="sch_team")
+        sch_rows = sch_c2.number_input("Show next N games", 5, 30, 10, key="sch_rows")
+
+        if st.button("📅 Load Schedule", key="btn_sch"):
+            with st.spinner(f"Loading {sch_team} 2026 schedule..."):
+                sch_df = _pl_schedule(2026, sch_team)
+            if sch_df.empty:
+                st.info(f"Schedule not available for {sch_team}.")
+            else:
+                today_str_sch = _today_pl.strftime("%Y-%m-%d")
+                # Show upcoming games
+                if "Date" in sch_df.columns:
+                    try:
+                        sch_df["_dt"] = pd.to_datetime(sch_df["Date"].astype(str) + " 2026",
+                                                         format="%b %d %Y", errors="coerce")
+                        upcoming = sch_df[sch_df["_dt"] >= pd.Timestamp(_today_pl)].head(sch_rows)
+                        show_sch = [c for c in ["Date","Home_Away","Opp","W/L","R","RA","Inn","W","L","Save","Streak","cLI"]
+                                    if c in upcoming.columns]
+                        if not show_sch:
+                            show_sch = list(upcoming.columns[:8])
+                        st.dataframe(upcoming[show_sch].drop(columns=["_dt"], errors="ignore"),
+                                     use_container_width=True, hide_index=True)
+                    except:
+                        st.dataframe(sch_df.head(sch_rows), use_container_width=True, hide_index=True)
+                else:
+                    st.dataframe(sch_df.head(sch_rows), use_container_width=True, hide_index=True)
+
+    # ── TAB 5: SPRINT SPEED ──────────────────────────────────────────
+    with pl_tab5:
+        st.markdown("#### 🏃 Sprint Speed — 2026 Leaderboard")
+        st.caption(
+            "From `statcast_running_sprint_speed` — feet per second in competitive runs. "
+            "Top speed threshold ≈ 30 ft/s. League avg ≈ 27 ft/s. "
+            "Critical for stolen base projections and roster decisions on speedy FAs."
+        )
+
+        with st.spinner("Loading sprint speed data..."):
+            spd_df = _pl_sprint(2026)
+
+        if spd_df.empty:
+            st.info("Sprint speed data not available yet for 2026. Check back mid-season.")
+        else:
+            spd_df.columns = [c.lower() for c in spd_df.columns]
+            for c in spd_df.columns:
+                if spd_df[c].dtype == object:
+                    try: spd_df[c] = pd.to_numeric(spd_df[c], errors="ignore")
+                    except: pass
+
+            sp_c1, sp_c2 = st.columns(2)
+            sp_min = sp_c1.number_input("Min sprint opportunities", 5, 50, 10, key="sp_min")
+            sp_sort = sp_c2.selectbox("Sort by",
+                [c for c in spd_df.columns if spd_df[c].dtype in [float,int]][:8],
+                key="sp_sort"
+            )
+
+            speed_col = next((c for c in ["sprint_speed","hp_to_1b","sprint_speed_percentile"]
+                              if c in spd_df.columns), None)
+            if speed_col:
+                spd_df = spd_df.sort_values(sp_sort, ascending=False)
+
+                def _spd_color(val):
+                    try:
+                        v=float(val)
+                        if v>=30.0: return "color:#21C354;font-weight:bold"
+                        if v>=28.5: return "color:#21C354"
+                        if v>=27.0: return "color:#FFA500"
+                        return "color:#FF4B4B"
+                    except: return ""
+
+                id_spd   = [c for c in ["last_name","first_name","player_name","team"] if c in spd_df.columns]
+                stat_spd = [c for c in spd_df.columns if c not in id_spd and spd_df[c].dtype in [float,int]][:8]
+                show_spd = id_spd + stat_spd
+                style_spd = spd_df[show_spd].head(60).style
+                if speed_col in show_spd:
+                    style_spd = style_spd.map(_spd_color, subset=[speed_col])
+                    style_spd = style_spd.background_gradient(subset=[speed_col], cmap="RdYlGn", vmin=24, vmax=31)
+                st.dataframe(style_spd, use_container_width=True, hide_index=True, height=540)
+
+                # My roster overlay
+                roster_sp = st.session_state.get("yahoo_roster_data", {})
+                if "error" not in roster_sp and roster_sp:
+                    st.markdown("---")
+                    st.markdown("**Your roster players' sprint speed:**")
+                    try:
+                        ents_sp = roster_sp["fantasy_content"]["team"][1]["roster"]["0"]["players"]
+                        my_names_sp = []
+                        for k,v in ents_sp.items():
+                            if k=="count": continue
+                            p0 = v["player"][0]
+                            n  = next((x["name"]["full"] for x in p0 if isinstance(x,dict) and "name" in x),"")
+                            if n: my_names_sp.append(n)
+
+                        found_sp = []
+                        for nm_sp in my_names_sp:
+                            last_sp = nm_sp.split()[-1].lower()
+                            for nc in ["last_name","player_name"]:
+                                if nc in spd_df.columns:
+                                    hit_sp = spd_df[spd_df[nc].str.lower().str.contains(last_sp, na=False)]
+                                    if not hit_sp.empty:
+                                        r_sp = hit_sp.iloc[0].to_dict()
+                                        r_sp["Player"] = nm_sp
+                                        found_sp.append(r_sp)
+                                        break
+
+                        if found_sp:
+                            my_spd_df = pd.DataFrame(found_sp)
+                            show_my_sp = ["Player"] + [c for c in stat_spd if c in my_spd_df.columns]
+                            style_my_sp = my_spd_df[show_my_sp].style
+                            if speed_col in show_my_sp:
+                                style_my_sp = style_my_sp.map(_spd_color, subset=[speed_col])
+                            st.dataframe(style_my_sp, use_container_width=True, hide_index=True)
+                        else:
+                            st.caption("No roster players matched sprint speed data.")
+                    except: pass
+
+                # SB candidate finder
+                st.markdown("---")
+                st.markdown("**💨 Stolen Base Candidates — Top Speed FAs**")
+                st.caption("Fast available players you could add for SB help.")
+
+                if st.session_state.get("yahoo_league_key") and st.session_state.get("yahoo_token"):
+                    if st.button("🔍 Find Fast FAs", key="btn_fast_fa"):
+                        with st.spinner("Fetching fast free agents..."):
+                            import requests as _rsp
+                            tok_sp = st.session_state["yahoo_token"]
+                            lk_sp  = st.session_state["yahoo_league_key"]
+                            r_sp2  = _rsp.get(
+                                f"https://fantasysports.yahooapis.com/fantasy/v2"
+                                f"/league/{lk_sp}/players;status=FA;position=B"
+                                f";sort=AR;count=100?format=json",
+                                headers={"Authorization": f"Bearer {tok_sp['access_token']}",
+                                         "Accept":"application/json"},
+                                timeout=15
+                            )
+                            if r_sp2.status_code == 200:
+                                fa_names_sp = []
+                                try:
+                                    pl_sp = r_sp2.json()["fantasy_content"]["league"][1]["players"]
+                                    for k,v in pl_sp.items():
+                                        if k=="count": continue
+                                        p0 = v["player"][0]
+                                        n  = next((x["name"]["full"] for x in p0 if isinstance(x,dict) and "name" in x),"")
+                                        if n: fa_names_sp.append(n)
+                                except: pass
+
+                                fast_fas = []
+                                for fa_n in fa_names_sp:
+                                    last_fa = fa_n.split()[-1].lower()
+                                    for nc in ["last_name","player_name"]:
+                                        if nc in spd_df.columns:
+                                            hit_fa = spd_df[spd_df[nc].str.lower().str.contains(last_fa, na=False)]
+                                            if not hit_fa.empty and speed_col in hit_fa.columns:
+                                                spd_val = float(hit_fa.iloc[0][speed_col])
+                                                if spd_val >= 28.0:
+                                                    r_fa = hit_fa.iloc[0].to_dict()
+                                                    r_fa["FA Name"] = fa_n
+                                                    fast_fas.append(r_fa)
+                                                break
+
+                                if fast_fas:
+                                    fast_fas.sort(key=lambda x: -float(x.get(speed_col,0)))
+                                    ffa_df = pd.DataFrame(fast_fas)
+                                    show_ffa = ["FA Name"] + [c for c in stat_spd if c in ffa_df.columns]
+                                    st.dataframe(
+                                        ffa_df[show_ffa].style.map(_spd_color, subset=[speed_col]),
+                                        use_container_width=True, hide_index=True
+                                    )
+                                else:
+                                    st.info("No fast (≥28 ft/s) free agents found on your wire.")
+                else:
+                    st.info("Connect to Yahoo to find fast free agents on your wire.")
+            else:
+                st.dataframe(spd_df.head(50), use_container_width=True, hide_index=True)
