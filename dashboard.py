@@ -47,180 +47,83 @@ st.markdown("""
 
 
 # ─────────────────────────────────────────────────────────────
-#  DEMO DATA
-# ─────────────────────────────────────────────────────────────
 
-def _demo_batting() -> pd.DataFrame:
-    players = [
-        "Mookie Betts","Freddie Freeman","Ronald Acuña Jr.","Juan Soto",
-        "Yordan Alvarez","Trea Turner","Corey Seager","Kyle Tucker",
-        "Julio Rodriguez","Francisco Lindor","Pete Alonso","Nolan Arenado",
-        "Paul Goldschmidt","Bryce Harper","Mike Trout","Shohei Ohtani",
-        "Vladimir Guerrero Jr.","Bo Bichette","Austin Riley","Gunnar Henderson",
-        "Elly De La Cruz","Bobby Witt Jr.","Corbin Carroll","Matt Olson",
-        "Spencer Steer","Adolis Garcia","Randy Arozarena","Cedric Mullins",
-        "Ian Happ","Willy Adames","Jackson Merrill","Wyatt Langford",
-        "Junior Caminero","Jordan Walker","Evan Carter","James Wood",
-    ]
-    teams = ["LAD","ATL","ATL","NYY","HOU","PHI","TEX","HOU","SEA","NYM",
-             "NYM","STL","STL","PHI","LAA","LAD","TOR","TOR","ATL","BAL",
-             "CIN","KC","ARI","ATL","CIN","TEX","TB","BAL","CHC","MIL",
-             "SD","TEX","TB","STL","TEX","WSH"]
-    positions = ["OF","1B","OF","OF","DH","SS","SS","OF","OF","SS",
-                 "1B","3B","1B","1B","OF","DH","1B","SS","3B","SS",
-                 "SS","SS","OF","1B","2B","OF","OF","OF","OF","SS",
-                 "OF","OF","3B","OF","OF","OF"]
-    n = len(players)
-    frames = []
-    for yr in [2021, 2022, 2023, 2024, 2025]:
-        np.random.seed(42 + yr)
-        g_max  = 90  if yr == 2025 else 162
-        pa_max = 380 if yr == 2025 else 700
-        pa_min = 200 if yr == 2025 else 450
-        df = pd.DataFrame({
-            "Name": players, "Team": teams, "Position": positions, "Season": yr,
-            "Age":     np.array([a + (yr - 2021) for a in np.random.randint(22, 33, n)]),
-            "G":       np.random.randint(55 if yr==2025 else 110, g_max, n),
-            "PA":      np.random.randint(pa_min, pa_max, n),
-            "HR":      np.random.randint(4 if yr==2025 else 8, 22 if yr==2025 else 46, n),
-            "R":       np.random.randint(25 if yr==2025 else 55, 60 if yr==2025 else 115, n),
-            "RBI":     np.random.randint(22 if yr==2025 else 50, 58 if yr==2025 else 115, n),
-            "SB":      np.random.randint(0, 28 if yr==2025 else 55, n),
-            "AVG":     np.round(np.random.uniform(.228, .322, n), 3),
-            "OBP":     np.round(np.random.uniform(.298, .422, n), 3),
-            "SLG":     np.round(np.random.uniform(.378, .592, n), 3),
-            "wOBA":    np.round(np.random.uniform(.308, .432, n), 3),
-            "xwOBA":   np.round(np.random.uniform(.303, .422, n), 3),
-            "xBA":     np.round(np.random.uniform(.218, .308, n), 3),
-            "wRC+":    np.random.randint(85, 172, n),
-            "BB%":     np.round(np.random.uniform(.058, .182, n), 3),
-            "K%":      np.round(np.random.uniform(.138, .312, n), 3),
-            "BABIP":   np.round(np.random.uniform(.262, .368, n), 3),
-            "Hard%":   np.round(np.random.uniform(.285, .562, n), 3),
-            "Barrel%": np.round(np.random.uniform(.048, .192, n), 3),
-            "SwStr%":  np.round(np.random.uniform(.068, .172, n), 3),
-            "maxEV":   np.round(np.random.uniform(100, 118, n), 1),
-            "EV":      np.round(np.random.uniform(85, 95, n), 1),
-            "LA":      np.round(np.random.uniform(5, 20, n), 1),
-            "Spd":     np.round(np.random.uniform(2.4, 9.2, n), 1),
-            "Pull%":   np.round(np.random.uniform(.32, .52, n), 3),
-            "GB%":     np.round(np.random.uniform(.33, .52, n), 3),
-            "FB%":     np.round(np.random.uniform(.25, .44, n), 3),
-        })
-        df["OPS"] = np.round(df["OBP"] + df["SLG"], 3)
-        frames.append(df)
-    return pd.concat(frames, ignore_index=True)
-
-
-def _demo_pitching() -> pd.DataFrame:
-    players = [
-        "Spencer Strider","Zack Wheeler","Corbin Burnes","Max Fried",
-        "Sandy Alcantara","Kevin Gausman","Logan Webb","Shane Bieber",
-        "Framber Valdez","Pablo Lopez","Dylan Cease","Yu Darvish",
-        "Gerrit Cole","Justin Verlander","Clayton Kershaw",
-        "Blake Snell","Tyler Glasnow","Shane McClanahan",
-        "Luis Castillo","Nestor Cortes","Joe Musgrove","Freddy Peralta",
-        "George Kirby","MacKenzie Gore","Hunter Greene","Reid Detmers",
-        "Sonny Gray","Chris Sale","Tarik Skubal","Logan Gilbert",
-        "Paul Skenes","Colt Keith","Jacob deGrom","Kodai Senga",
-    ]
-    teams = ["ATL","PHI","MIL","ATL","MIA","SF","SF","CLE","HOU","MIN",
-             "CWS","SD","NYY","NYY","LAD","SD","TB","TB","SEA",
-             "NYY","SD","MIL","SEA","WSH","CIN","LAA","STL","ATL","DET","SEA",
-             "PIT","DET","TEX","NYM"]
-    n = len(players)
-    frames = []
-    for yr in [2021, 2022, 2023, 2024, 2025]:
-        np.random.seed(99 + yr)
-        ip_max = 90  if yr == 2025 else 200
-        ip_min = 45  if yr == 2025 else 100
-        ip   = np.random.randint(ip_min, ip_max, n).astype(float)
-        so   = (ip * np.random.uniform(7.5, 12.5, n) / 9).astype(int)
-        bb   = (ip * np.random.uniform(1.8,  4.2, n) / 9).astype(int)
-        era  = np.round(np.random.uniform(2.4, 5.0, n), 2)
-        xfip = np.round(era + np.random.uniform(-0.6, 0.9, n), 2)
-        df = pd.DataFrame({
-            "Name": players, "Team": teams, "Season": yr,
-            "Age":     np.array([a + (yr-2021) for a in np.random.randint(23, 37, n)]),
-            "G":       np.random.randint(10 if yr==2025 else 20, 18 if yr==2025 else 33, n),
-            "GS":      np.random.randint(9  if yr==2025 else 18, 17 if yr==2025 else 32, n),
-            "IP":      np.round(ip, 1),
-            "W":       np.random.randint(3 if yr==2025 else 5, 10 if yr==2025 else 19, n),
-            "SV":      np.random.randint(0 if yr==2025 else 0, 8 if yr==2025 else 40, n),
-            "SO":      so,
-            "BB":      bb,
-            "ERA":     era,
-            "WHIP":    np.round(np.random.uniform(0.90, 1.44, n), 2),
-            "FIP":     np.round(xfip + np.random.uniform(-0.2, 0.2, n), 2),
-            "xFIP":    xfip,
-            "SIERA":   np.round(xfip + np.random.uniform(-0.15, 0.25, n), 2),
-            "K%":      np.round(so / (so + bb + ip * 2.5), 3),
-            "BB%":     np.round(bb / (so + bb + ip * 2.5), 3),
-            "BABIP":   np.round(np.random.uniform(.262, .328, n), 3),
-            "LOB%":    np.round(np.random.uniform(.61, .84, n), 3),
-            "SwStr%":  np.round(np.random.uniform(.088, .192, n), 3),
-            "Hard%":   np.round(np.random.uniform(.268, .462, n), 3),
-            "Barrel%": np.round(np.random.uniform(.028, .112, n), 3),
-            "HR/FB":   np.round(np.random.uniform(.068, .162, n), 3),
-            "GB%":     np.round(np.random.uniform(.32, .58, n), 3),
-            "FB%":     np.round(np.random.uniform(.22, .42, n), 3),
-            "CSW%":    np.round(np.random.uniform(.26, .36, n), 3),
-        })
-        df["K/9"]   = np.round(df["SO"] / df["IP"] * 9, 2)
-        df["BB/9"]  = np.round(df["BB"] / df["IP"] * 9, 2)
-        df["K-BB%"] = np.round(df["K%"] - df["BB%"], 3)
-        frames.append(df)
-    return pd.concat(frames, ignore_index=True)
+# Demo data removed — app uses live FanGraphs data via pybaseball
 
 
 # ─────────────────────────────────────────────────────────────
 #  DATA LOADING
 # ─────────────────────────────────────────────────────────────
 
-YEARS     = [2021, 2022, 2023, 2024, 2025]
+YEARS     = [2021, 2022, 2023, 2024, 2025, 2026]
 CACHE_DIR = "data_cache"
-MIN_PA    = 100
-MIN_IP    = 20
+MIN_PA    = 50   # lowered so 2026 early-season players qualify
+MIN_IP    = 10   # lowered so 2026 early-season pitchers qualify
 
 
-@st.cache_data(show_spinner="⚾ Loading baseball data...")
+@st.cache_data(show_spinner="⚾ Loading baseball data...", ttl=14400)
 def load_data():
+    """Load real FanGraphs data via pybaseball. Always uses live data — no demo fallback."""
+    import warnings, time as _lt
+    warnings.filterwarnings("ignore")
     os.makedirs(CACHE_DIR, exist_ok=True)
-    bat_files = sorted([f for f in os.listdir(CACHE_DIR)
-                        if f.startswith("batting_") and f.endswith(".csv")])
-    pit_files = sorted([f for f in os.listdir(CACHE_DIR)
-                        if f.startswith("pitching_") and f.endswith(".csv")])
-    if bat_files and pit_files:
-        bat_all = pd.concat(
-            [pd.read_csv(os.path.join(CACHE_DIR, f)) for f in bat_files], ignore_index=True)
-        pit_all = pd.concat(
-            [pd.read_csv(os.path.join(CACHE_DIR, f)) for f in pit_files], ignore_index=True)
-    else:
+
+    from pybaseball import batting_stats, pitching_stats, cache as pb_cache
+    pb_cache.enable()
+
+    bat_frames, pit_frames = [], []
+    errors = []
+    cur_yr = __import__("datetime").date.today().year
+
+    for yr in YEARS:
+        # Check disk cache first (written below after successful fetch)
+        b_path = os.path.join(CACHE_DIR, f"batting_{yr}.csv")
+        p_path = os.path.join(CACHE_DIR, f"pitching_{yr}.csv")
+
+        # For current year use a short TTL — re-fetch if file is >4 hours old
+        cache_stale = False
+        if yr == cur_yr and os.path.exists(b_path):
+            age_hrs = (_t.time() - os.path.getmtime(b_path)) / 3600
+            if age_hrs > 4:
+                cache_stale = True
+
+        if os.path.exists(b_path) and os.path.exists(p_path) and not cache_stale:
+            try:
+                b = pd.read_csv(b_path); b["Season"] = yr; bat_frames.append(b)
+                p = pd.read_csv(p_path); p["Season"] = yr; pit_frames.append(p)
+                continue
+            except Exception:
+                pass  # fall through to fetch
+
+        # Fetch from FanGraphs via pybaseball
         try:
-            from pybaseball import batting_stats, pitching_stats, cache as pb_cache
-            pb_cache.enable()
-            bat_frames, pit_frames = [], []
-            for yr in YEARS:
-                try:
-                    b = batting_stats(yr, qual=MIN_PA); b["Season"] = yr; bat_frames.append(b)
-                    p = pitching_stats(yr, qual=MIN_IP); p["Season"] = yr; pit_frames.append(p)
-                except Exception:
-                    pass
-            if bat_frames and pit_frames:
-                bat_all = pd.concat(bat_frames, ignore_index=True)
-                pit_all = pd.concat(pit_frames, ignore_index=True)
-                for yr in YEARS:
-                    b = bat_all[bat_all["Season"] == yr]
-                    p = pit_all[pit_all["Season"] == yr]
-                    if not b.empty: b.to_csv(os.path.join(CACHE_DIR, f"batting_{yr}.csv"), index=False)
-                    if not p.empty: p.to_csv(os.path.join(CACHE_DIR, f"pitching_{yr}.csv"), index=False)
-            else:
-                raise RuntimeError("no frames")
-        except Exception:
-            bat_all = _demo_batting()
-            pit_all = _demo_pitching()
+            qual_pa = MIN_PA if yr < cur_yr else 1   # no qualifier for current season
+            qual_ip = MIN_IP if yr < cur_yr else 1
+            b = batting_stats(yr, qual=qual_pa)
+            p = pitching_stats(yr, qual=qual_ip)
+            if b is not None and not b.empty:
+                b["Season"] = yr
+                bat_frames.append(b)
+                b.to_csv(b_path, index=False)
+            if p is not None and not p.empty:
+                p["Season"] = yr
+                pit_frames.append(p)
+                p.to_csv(p_path, index=False)
+        except Exception as e:
+            errors.append(f"{yr}: {e}")
+
+    if not bat_frames or not pit_frames:
+        raise RuntimeError(
+            f"Could not load any baseball data from FanGraphs. Errors: {errors}. "
+            "Check pybaseball installation and network access."
+        )
+
+    bat_all = pd.concat(bat_frames, ignore_index=True)
+    pit_all = pd.concat(pit_frames, ignore_index=True)
+
     if "Position" not in bat_all.columns:
         bat_all["Position"] = "—"
+
     latest  = int(bat_all["Season"].max())
     bat_rec = score_hitters(bat_all[bat_all["Season"] == latest].copy())
     pit_rec = score_pitchers(pit_all[pit_all["Season"] == latest].copy())
@@ -301,7 +204,19 @@ def style_z(val):
 #  LOAD DATA & SESSION STATE
 # ─────────────────────────────────────────────────────────────
 
-bat_all, pit_all, bat_rec, pit_rec, LATEST = load_data()
+# Load data with visible progress
+_data_placeholder = st.empty()
+try:
+    bat_all, pit_all, bat_rec, pit_rec, LATEST = load_data()
+    _data_placeholder.empty()
+except RuntimeError as _e:
+    _data_placeholder.empty()
+    st.error(f"⚠️ Could not load FanGraphs data: {_e}")
+    st.info(
+        "This usually means FanGraphs is temporarily unavailable or pybaseball "
+        "hit a rate limit. Wait 60 seconds and reload the page."
+    )
+    st.stop()
 ALL_YEARS = sorted(bat_all["Season"].unique().tolist())
 
 for _k in ["drafted_h","drafted_p","my_h","my_p","targets"]:
@@ -901,13 +816,16 @@ page = st.sidebar.radio("Navigate", [
     "🏆 My Yahoo League",
 ])
 st.sidebar.markdown("---")
-using_demo = not any(f.startswith("batting_") for f in os.listdir(CACHE_DIR)) \
-             if os.path.exists(CACHE_DIR) else True
-if using_demo:
-    st.sidebar.warning("⚠️ Demo data active.\nRun `python data_loader.py` for real stats.")
-else:
-    st.sidebar.success(f"✅ Live data through {LATEST}")
-st.sidebar.caption(f"Seasons: {', '.join(map(str, ALL_YEARS))}")
+
+# Data status panel
+import datetime as _dt_sb
+_now_sb = _dt_sb.datetime.now().strftime("%I:%M %p")
+st.sidebar.success(f"✅ Live data through {LATEST}")
+st.sidebar.caption(f"Loaded: {_now_sb} · Seasons: 2021–{LATEST}")
+
+if st.sidebar.button("🔄 Refresh Data", key="btn_refresh_data", help="Force re-fetch from FanGraphs"):
+    st.cache_data.clear()
+    st.rerun()
 if st.session_state.targets:
     st.sidebar.markdown("---")
     st.sidebar.markdown(f"**🎯 Target List: {len(st.session_state.targets)} players**")
@@ -7029,13 +6947,20 @@ if page == "🔬 Edge Finder":
                     for c in ["ERA","FIP","xFIP","L14 ERA","ERA-FIP"]:
                         if c in gdf.columns: num_fmt[c] = "{:.2f}"
 
+                    # Ensure all numeric fmt cols are actually numeric first
+                    safe_gem_fmt = {}
+                    for col_g, fmt_g in num_fmt.items():
+                        if col_g in gdf.columns:
+                            gdf[col_g] = pd.to_numeric(gdf[col_g], errors="coerce")
+                            safe_gem_fmt[col_g] = fmt_g
+
                     style_g = gdf.style.map(_gem_rec, subset=["Rec"])
-                    if "BABIP Luck" in gdf.columns:
+                    if "BABIP Luck" in gdf.columns and gdf["BABIP Luck"].notna().any():
                         style_g = style_g.map(_luck_color, subset=["BABIP Luck"])
                     if "Gem Score" in gdf.columns:
                         style_g = style_g.background_gradient(subset=["Gem Score"], cmap="RdYlGn", vmin=0.2, vmax=0.8)
-                    if num_fmt:
-                        style_g = style_g.format(num_fmt, na_rep="—")
+                    if safe_gem_fmt:
+                        style_g = style_g.format(safe_gem_fmt, na_rep="—")
 
                     st.dataframe(style_g, use_container_width=True, hide_index=True, height=500)
                     st.caption(
@@ -7184,10 +7109,22 @@ if page == "🔬 Edge Finder":
                 for c in ["ERA","FIP","WHIP"]:
                     if c in idf.columns: num_fmt_i[c] = "{:.2f}"
 
+                # Safe display — mixed hitter/pitcher rows means some numeric cols
+                # have string "—" values; format only truly numeric columns
+                safe_fmt = {}
+                for col_f, fmt_f in num_fmt_i.items():
+                    if col_f in idf.columns:
+                        idf[col_f] = pd.to_numeric(idf[col_f], errors="coerce")
+                        if idf[col_f].notna().any():
+                            safe_fmt[col_f] = fmt_f
+
                 style_i = idf.style
-                if "Grade"  in idf.columns: style_i = style_i.map(_grade_c,  subset=["Grade"])
-                if "Action" in idf.columns: style_i = style_i.map(_action_c, subset=["Action"])
-                if num_fmt_i: style_i = style_i.format(num_fmt_i, na_rep="—")
+                if "Grade"  in idf.columns:
+                    style_i = style_i.map(_grade_c,  subset=["Grade"])
+                if "Action" in idf.columns:
+                    style_i = style_i.map(_action_c, subset=["Action"])
+                if safe_fmt:
+                    style_i = style_i.format(safe_fmt, na_rep="—")
 
                 st.dataframe(style_i, use_container_width=True, hide_index=True)
 
@@ -7378,7 +7315,9 @@ if page == "🔬 Edge Finder":
 
                     fmt_rw = {}
                     for c in ["AVG","BABIP","xwOBA","BABIP Gap"]:
-                        if c in df_rw.columns: fmt_rw[c] = "{:.3f}"
+                        if c in df_rw.columns:
+                            df_rw[c] = pd.to_numeric(df_rw[c], errors="coerce")
+                            fmt_rw[c] = "{:.3f}"
                     style_rw = df_rw[show_rw].head(30).style
                     if "BABIP Gap" in show_rw: style_rw = style_rw.map(_gap_color, subset=["BABIP Gap"])
                     if fmt_rw: style_rw = style_rw.format(fmt_rw, na_rep="—")
@@ -7609,11 +7548,17 @@ if page == "🔬 Edge Finder":
                         if c in wdf.columns: fmt_ww[c] = "{:.2f}"
                     fmt_ww["Score"] = "{:.3f}"
 
+                    safe_ww_fmt = {}
+                    for col_w, fmt_w in fmt_ww.items():
+                        if col_w in wdf.columns:
+                            wdf[col_w] = pd.to_numeric(wdf[col_w], errors="coerce")
+                            safe_ww_fmt[col_w] = fmt_w
+
                     style_ww = wdf.style.map(_score_c, subset=["Score"])
                     if "Score" in wdf.columns:
                         style_ww = style_ww.background_gradient(subset=["Score"], cmap="RdYlGn", vmin=.25, vmax=.80)
-                    if fmt_ww:
-                        style_ww = style_ww.format(fmt_ww, na_rep="—")
+                    if safe_ww_fmt:
+                        style_ww = style_ww.format(safe_ww_fmt, na_rep="—")
 
                     st.dataframe(style_ww, use_container_width=True, hide_index=True, height=550)
                     st.caption(
