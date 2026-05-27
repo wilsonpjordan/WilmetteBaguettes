@@ -5,3 +5,5 @@ plotly
 pybaseball
 scipy
 MLB-StatsAPI
+requests
+curl-cffi
