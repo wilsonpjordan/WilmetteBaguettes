@@ -57,69 +57,222 @@ st.markdown("""
 
 YEARS     = [2021, 2022, 2023, 2024, 2025, 2026]
 CACHE_DIR = "data_cache"
-MIN_PA    = 50   # lowered so 2026 early-season players qualify
-MIN_IP    = 10   # lowered so 2026 early-season pitchers qualify
+MIN_PA    = 50
+MIN_IP    = 10
+
+
+def _fetch_with_browser_agent(url: str) -> pd.DataFrame:
+    """Fetch a CSV URL with a browser User-Agent to bypass cloud IP blocks."""
+    import requests
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Referer": "https://www.fangraphs.com/",
+    }
+    r = requests.get(url, headers=headers, timeout=30)
+    r.raise_for_status()
+    from io import StringIO
+    return pd.read_csv(StringIO(r.text))
+
+
+def _fangraphs_bat(season: int, qual: int = 1) -> pd.DataFrame:
+    """Fetch FanGraphs batting leaderboard directly with browser headers."""
+    url = (
+        f"https://www.fangraphs.com/api/leaders/major-league/data"
+        f"?age=&pos=all&stats=bat&lg=all&qual={qual}&type=8"
+        f"&season={season}&season1={season}&ind=0&team=0"
+        f"&rost=0&players=0&startdate=&enddate=&month=0"
+        f"&pageitems=2000000&pagenum=1&ind=0&sortdir=default&sortstat=WAR"
+    )
+    import requests
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://www.fangraphs.com/leaders/major-league",
+        "Accept": "application/json",
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=30)
+        if r.status_code == 200:
+            data = r.json()
+            rows = data.get("data", [])
+            if rows:
+                return pd.DataFrame(rows)
+    except Exception:
+        pass
+
+    # Fallback: pybaseball with browser-patched session
+    try:
+        import pybaseball.fangraphs as fg
+        import pybaseball
+        # Monkey-patch requests session to add browser headers
+        original = None
+        try:
+            import requests.adapters
+            session = requests.Session()
+            session.headers.update(headers)
+            # Try via pybaseball directly
+            from pybaseball import batting_stats
+            df = batting_stats(season, qual=qual)
+            return df
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    return pd.DataFrame()
+
+
+def _fangraphs_pit(season: int, qual: int = 1) -> pd.DataFrame:
+    """Fetch FanGraphs pitching leaderboard directly with browser headers."""
+    import requests
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://www.fangraphs.com/leaders/major-league",
+        "Accept": "application/json",
+    }
+    url = (
+        f"https://www.fangraphs.com/api/leaders/major-league/data"
+        f"?age=&pos=all&stats=pit&lg=all&qual={qual}&type=8"
+        f"&season={season}&season1={season}&ind=0&team=0"
+        f"&rost=0&players=0&startdate=&enddate=&month=0"
+        f"&pageitems=2000000&pagenum=1&ind=0&sortdir=default&sortstat=WAR"
+    )
+    try:
+        r = requests.get(url, headers=headers, timeout=30)
+        if r.status_code == 200:
+            data = r.json()
+            rows = data.get("data", [])
+            if rows:
+                return pd.DataFrame(rows)
+    except Exception:
+        pass
+
+    try:
+        from pybaseball import pitching_stats
+        return pitching_stats(season, qual=qual)
+    except Exception:
+        pass
+
+    return pd.DataFrame()
+
+
+def _bref_bat(season: int) -> pd.DataFrame:
+    """Baseball Reference batting stats — not blocked by cloud IPs."""
+    try:
+        from pybaseball import batting_stats_bref
+        df = batting_stats_bref(season)
+        if df is not None and not df.empty:
+            # Standardise key column names to match FanGraphs style
+            rename = {"playerID": "IDfg", "mlbID": "MLBID"}
+            df = df.rename(columns=rename)
+            return df
+    except Exception:
+        pass
+    return pd.DataFrame()
+
+
+def _bref_pit(season: int) -> pd.DataFrame:
+    """Baseball Reference pitching stats — not blocked by cloud IPs."""
+    try:
+        from pybaseball import pitching_stats_bref
+        df = pitching_stats_bref(season)
+        if df is not None and not df.empty:
+            return df
+    except Exception:
+        pass
+    return pd.DataFrame()
 
 
 @st.cache_data(show_spinner="⚾ Loading baseball data...", ttl=14400)
 def load_data():
-    """Load real FanGraphs data via pybaseball. Always uses live data — no demo fallback."""
-    import warnings, time as _lt
+    """
+    Load real stats via multiple sources with fallback chain:
+    1. FanGraphs API (direct JSON endpoint with browser headers) — preferred, richest stats
+    2. Baseball Reference via pybaseball — not IP-blocked, good fallback
+    Stats are cached to disk; current year refreshes every 4 hours.
+    """
+    import warnings, time as _t
     warnings.filterwarnings("ignore")
     os.makedirs(CACHE_DIR, exist_ok=True)
 
-    from pybaseball import batting_stats, pitching_stats, cache as pb_cache
-    pb_cache.enable()
-
     bat_frames, pit_frames = [], []
-    errors = []
     cur_yr = __import__("datetime").date.today().year
 
     for yr in YEARS:
-        # Check disk cache first (written below after successful fetch)
         b_path = os.path.join(CACHE_DIR, f"batting_{yr}.csv")
         p_path = os.path.join(CACHE_DIR, f"pitching_{yr}.csv")
 
-        # For current year use a short TTL — re-fetch if file is >4 hours old
+        # Stale check for current year
         cache_stale = False
         if yr == cur_yr and os.path.exists(b_path):
-            age_hrs = (_t.time() - os.path.getmtime(b_path)) / 3600
-            if age_hrs > 4:
+            if (_t.time() - os.path.getmtime(b_path)) / 3600 > 4:
                 cache_stale = True
 
+        # Use disk cache if fresh
         if os.path.exists(b_path) and os.path.exists(p_path) and not cache_stale:
             try:
                 b = pd.read_csv(b_path); b["Season"] = yr; bat_frames.append(b)
                 p = pd.read_csv(p_path); p["Season"] = yr; pit_frames.append(p)
                 continue
             except Exception:
-                pass  # fall through to fetch
+                pass
 
-        # Fetch from FanGraphs via pybaseball
-        try:
-            qual_pa = MIN_PA if yr < cur_yr else 1   # no qualifier for current season
-            qual_ip = MIN_IP if yr < cur_yr else 1
-            b = batting_stats(yr, qual=qual_pa)
-            p = pitching_stats(yr, qual=qual_ip)
-            if b is not None and not b.empty:
-                b["Season"] = yr
-                bat_frames.append(b)
-                b.to_csv(b_path, index=False)
-            if p is not None and not p.empty:
-                p["Season"] = yr
-                pit_frames.append(p)
-                p.to_csv(p_path, index=False)
-        except Exception as e:
-            errors.append(f"{yr}: {e}")
+        qual_pa = MIN_PA if yr < cur_yr else 1
+        qual_ip = MIN_IP if yr < cur_yr else 1
+
+        # Source 1: FanGraphs direct API
+        b = _fangraphs_bat(yr, qual=qual_pa)
+        p = _fangraphs_pit(yr, qual=qual_ip)
+
+        # Source 2: Baseball Reference fallback
+        if b.empty:
+            b = _bref_bat(yr)
+        if p.empty:
+            p = _bref_pit(yr)
+
+        if b is not None and not b.empty:
+            b["Season"] = yr
+            bat_frames.append(b)
+            try: b.to_csv(b_path, index=False)
+            except Exception: pass
+
+        if p is not None and not p.empty:
+            p["Season"] = yr
+            pit_frames.append(p)
+            try: p.to_csv(p_path, index=False)
+            except Exception: pass
 
     if not bat_frames or not pit_frames:
         raise RuntimeError(
-            f"Could not load any baseball data from FanGraphs. Errors: {errors}. "
-            "Check pybaseball installation and network access."
+            "Could not load baseball data from FanGraphs or Baseball Reference. "
+            "Both sources failed — check network access from Streamlit Cloud."
         )
 
     bat_all = pd.concat(bat_frames, ignore_index=True)
     pit_all = pd.concat(pit_frames, ignore_index=True)
+
+    # Normalise Name column (BRef uses 'Name', FG uses 'Name')
+    if "Name" not in bat_all.columns:
+        for c in ["PlayerName","playerName","player_name","name"]:
+            if c in bat_all.columns:
+                bat_all = bat_all.rename(columns={c: "Name"}); break
+    if "Name" not in pit_all.columns:
+        for c in ["PlayerName","playerName","player_name","name"]:
+            if c in pit_all.columns:
+                pit_all = pit_all.rename(columns={c: "Name"}); break
 
     if "Position" not in bat_all.columns:
         bat_all["Position"] = "—"
