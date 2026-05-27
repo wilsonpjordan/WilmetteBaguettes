@@ -4450,7 +4450,7 @@ if page == "📈 Live Stats 2026":
                 "LAD":112,"NYY":108,"ATL":107,"HOU":106,"PHI":103,"BOS":102,
                 "BAL":101,"SEA":100,"CIN":99,"MIN":99,"SF":98,"MIL":97,
                 "STL":96,"TOR":96,"CLE":95,"TB":94,"TEX":93,"NYM":93,
-                "ARI":92,"KC":91,"DET":90,"SD":90,"OAK":89,"WSH":88,
+                "AZ":92,"KC":91,"DET":90,"SD":90,"OAK":89,"WSH":88,
                 "PIT":87,"MIA":86,"COL":85,"LAA":84,"CWS":83,"CHC":97,
             }
 
@@ -5320,7 +5320,7 @@ if page == "🏆 My Yahoo League":
                         "CHC": 1.03, "ATL": 1.02, "MIL": 1.01, "LAD": 1.00,
                         "NYM": 0.99, "TOR": 0.99, "MIN": 0.98, "STL": 0.97,
                         "DET": 0.97, "CLE": 0.96, "SEA": 0.95, "SF":  0.94,
-                        "ARI": 0.93, "WSH": 0.93, "MIA": 0.92, "TB":  0.91,
+                        "AZ": 0.93, "WSH": 0.93, "MIA": 0.92, "TB":  0.91,
                         "OAK": 0.91, "SD":  0.90, "PIT": 0.90, "KC":  0.89,
                         "LAA": 0.88, "CWS": 0.88,
                     }
@@ -5362,20 +5362,28 @@ if page == "🏆 My Yahoo League":
                         "Try selecting March 18, 19, or 27+ for live data."
                     )
                 else:
-                    # MLB Stats API → Yahoo abbreviation mapping
-                    # MLB uses 2-3 letter codes; Yahoo sometimes differs
-                    MLB_TO_YAHOO = {
-                        "SFG":"SF", "SDP":"SD", "KCR":"KC", "TBR":"TB",
-                        "CHW":"CWS", "WSN":"WSH", "ARI":"ARI", "ATL":"ATL",
-                        "LAD":"LAD", "LAA":"LAA", "NYY":"NYY", "NYM":"NYM",
-                        "BOS":"BOS", "CHC":"CHC", "CLE":"CLE", "COL":"COL",
-                        "DET":"DET", "HOU":"HOU", "MIA":"MIA", "MIL":"MIL",
-                        "MIN":"MIN", "OAK":"OAK", "PHI":"PHI", "PIT":"PIT",
-                        "SEA":"SEA", "STL":"STL", "TEX":"TEX", "TOR":"TOR",
-                        "CIN":"CIN", "BAL":"BAL",
+
+                    # Complete Yahoo ↔ MLB Stats API abbreviation map
+                    # Key = what MLB API returns, Value = what Yahoo uses
+                    _MLB_TO_YAHOO_MAP = {
+                        "ARI":"AZ",  "SFG":"SF",  "SDP":"SD",  "KCR":"KC",
+                        "TBR":"TB",  "CHW":"CWS", "WSN":"WSH", "LAD":"LAD",
+                        "LAA":"LAA", "NYY":"NYY", "NYM":"NYM", "BOS":"BOS",
+                        "CHC":"CHC", "CLE":"CLE", "COL":"COL", "DET":"DET",
+                        "HOU":"HOU", "MIA":"MIA", "MIL":"MIL", "MIN":"MIN",
+                        "OAK":"OAK", "PHI":"PHI", "PIT":"PIT", "SEA":"SEA",
+                        "STL":"STL", "TEX":"TEX", "TOR":"TOR", "CIN":"CIN",
+                        "BAL":"BAL", "ATL":"ATL",
                     }
+                    # Reverse: Yahoo → MLB (for matching roster teams to schedule)
+                    _YAHOO_TO_MLB_MAP = {v: k for k, v in _MLB_TO_YAHOO_MAP.items()}
+                    # Add identity entries so unmapped codes pass through
                     def _norm_abbr(ab):
-                        return MLB_TO_YAHOO.get(ab, ab)
+                        """Convert MLB Stats API abbr → Yahoo abbr."""
+                        return _MLB_TO_YAHOO_MAP.get(ab, ab)
+                    def _yahoo_to_mlb(ab):
+                        """Convert Yahoo abbr → MLB Stats API abbr."""
+                        return _YAHOO_TO_MLB_MAP.get(ab, ab)
 
                     # Build team → game mapping
                     team_games = {}  # abbr → game info
@@ -5438,11 +5446,8 @@ if page == "🏆 My Yahoo League":
                         matched = my_teams & mlb_teams_today
                         unmatched = my_teams - mlb_teams_today
                         if not matched and unmatched:
-                            st.warning(
-                                f"⚠️ Your roster teams ({', '.join(sorted(unmatched))}) "
-                                f"didn't match today's MLB schedule teams ({', '.join(sorted(mlb_teams_today)[:8])}...). "
-                                f"This can happen if Yahoo and MLB use different abbreviations, "
-                                f"or if your players' teams don't have games today."
+                            st.info(
+                                f"ℹ️ Checking abbreviation remapping for: {', '.join(sorted(unmatched)[:6])}"
                             )
                         elif matched:
                             st.success(f"✅ Found {len(matched)} of your teams playing today: {', '.join(sorted(matched))}")
@@ -5837,7 +5842,7 @@ if page == "🏆 My Yahoo League":
                     "LAD":112,"NYY":108,"ATL":107,"HOU":106,"PHI":103,"BOS":102,
                     "BAL":101,"SEA":100,"CIN":99,"MIN":99,"SF":98,"MIL":97,
                     "STL":96,"TOR":96,"CLE":95,"TB":94,"TEX":93,"NYM":93,
-                    "ARI":92,"KC":91,"DET":90,"SD":90,"OAK":89,"WSH":88,
+                    "AZ":92,"KC":91,"DET":90,"SD":90,"OAK":89,"WSH":88,
                     "PIT":87,"MIA":86,"COL":85,"LAA":84,"CWS":83,"CHC":97,
                 }
 
@@ -7142,9 +7147,11 @@ if page == "🔬 Edge Finder":
 
                 # Build team → probable pitcher map
                 pp_map = {}  # team_abbr → {name, hand, id}
-                MLB_TO_Y = {"SFG":"SF","SDP":"SD","KCR":"KC","TBR":"TB",
-                            "CHW":"CWS","WSN":"WSH","ARI":"ARI","LAD":"LAD"}
-                def _norm(ab): return MLB_TO_Y.get(ab,ab)
+                _EF_MLB_TO_Y = {
+                    "ARI":"AZ","SFG":"SF","SDP":"SD","KCR":"KC","TBR":"TB",
+                    "CHW":"CWS","WSN":"WSH","LAD":"LAD","LAA":"LAA",
+                }
+                def _norm(ab): return _EF_MLB_TO_Y.get(ab, ab)
 
                 for g in games_ef:
                     for side, opp_side in [("away","home"),("home","away")]:
@@ -7596,7 +7603,7 @@ if page == "🔬 Edge Finder":
                     WRCPLUS_WW = {"LAD":112,"NYY":108,"ATL":107,"HOU":106,"PHI":103,"BOS":102,
                                   "BAL":101,"SEA":100,"CIN":99,"MIN":99,"SF":98,"MIL":97,
                                   "STL":96,"TOR":96,"CLE":95,"TB":94,"TEX":93,"NYM":93,
-                                  "ARI":92,"KC":91,"DET":90,"SD":90,"OAK":89,"WSH":88,
+                                  "AZ":92,"KC":91,"DET":90,"SD":90,"OAK":89,"WSH":88,
                                   "PIT":87,"MIA":86,"COL":85,"LAA":84,"CWS":83,"CHC":97}
 
                     ww_rows = []
